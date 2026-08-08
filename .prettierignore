@@ -1,0 +1,10 @@
+.agents
+.codex
+.next
+build
+coverage
+generated
+node_modules
+out
+package-lock.json
+public

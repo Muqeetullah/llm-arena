@@ -6,3 +6,100 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum ModelResponseStatus {
+  PENDING
+  STREAMING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  /// The Clerk user ID is the canonical application user ID.
+  id        String   @id
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  threads Thread[]
+  votes   Vote[]
+
+  @@map("users")
+}
+
+model Thread {
+  id        String   @id @default(cuid())
+  ownerId   String
+  title     String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  owner User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  turns Turn[]
+
+  @@index([ownerId, updatedAt(sort: Desc)])
+  @@map("threads")
+}
+
+/// One user prompt shared by every selected model. A model's conversation can
+/// be reconstructed from the ordered turns and that model's response per turn.
+model Turn {
+  id        String   @id @default(cuid())
+  threadId  String
+  position  Int
+  prompt    String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  thread    Thread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  responses ModelResponse[]
+  vote      Vote?
+
+  @@unique([threadId, position])
+  @@index([threadId, createdAt])
+  @@map("turns")
+}
+
+model ModelResponse {
+  id        String              @id @default(cuid())
+  turnId    String
+  modelId   String
+  modelName String
+  status    ModelResponseStatus @default(PENDING)
+  content   String              @default("")
+  errorCode String?
+
+  /// Provider-reported usage. Total tokens are derived as input + output.
+  inputTokens  Int?
+  outputTokens Int?
+
+  /// Millisecond measurements captured by the model request boundary.
+  timeToFirstTokenMs Int?
+  durationMs         Int?
+
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  firstTokenAt DateTime? @db.Timestamptz(3)
+  completedAt  DateTime? @db.Timestamptz(3)
+
+  turn  Turn   @relation(fields: [turnId], references: [id], onDelete: Cascade)
+  votes Vote[]
+
+  @@unique([turnId, modelId])
+  @@unique([id, turnId])
+  @@index([modelId, status])
+  @@map("model_responses")
+}
+
+model Vote {
+  id         String   @id @default(cuid())
+  userId     String
+  turnId     String   @unique
+  responseId String   @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  turn     Turn          @relation(fields: [turnId], references: [id], onDelete: Cascade)
+  response ModelResponse @relation(fields: [responseId, turnId], references: [id, turnId], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("votes")
+}

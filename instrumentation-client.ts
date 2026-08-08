@@ -4,7 +4,9 @@ const projectToken = process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN;
 const apiHost = process.env.NEXT_PUBLIC_POSTHOG_HOST;
 
 if (!projectToken) {
-  throw new Error("Missing environment variable: NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN");
+  throw new Error(
+    "Missing environment variable: NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN",
+  );
 }
 
 if (!apiHost) {

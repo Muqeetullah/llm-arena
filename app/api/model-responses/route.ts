@@ -1,8 +1,5 @@
 import { auth } from "@clerk/nextjs/server";
-import {
-  convertToModelMessages,
-  streamText,
-} from "ai";
+import { convertToModelMessages, streamText } from "ai";
 import { logModelError } from "@/features/model-connection/server/errors";
 import { parseModelRequest } from "@/features/model-connection/server/input";
 import { createTracedModel } from "@/features/model-connection/server/model";
