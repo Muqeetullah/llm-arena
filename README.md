@@ -1,8 +1,19 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LLM Arena
+
+Send one prompt to free OpenRouter models, compare their independently streamed answers, and vote for the best one.
+
+## Local setup
+
+1. Copy `.env.example` to `.env.local` and provide Clerk, OpenRouter, Arcjet, PostHog, and PostgreSQL credentials.
+2. Install dependencies with `npm install`.
+3. Generate the Prisma client with `npm run prisma:generate`.
+4. Start the app with `npm run dev`.
+
+The model endpoint is `POST /api/model-responses`. It requires a Clerk session and accepts one free OpenRouter model per request. Multiple models must be called with separate concurrent requests so their streams fail and cancel independently.
 
 ## Getting Started
 
-First, run the development server:
+Run the development server:
 
 ```bash
 npm run dev

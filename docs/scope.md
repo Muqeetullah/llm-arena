@@ -18,7 +18,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 | #   | Feature                                     | Phase      | Status      |
 | --- | ------------------------------------------- | ---------- | ----------- |
-| 1   | Connecting to a model                       | Foundation | not started |
+| 1   | Connecting to a model                       | Foundation | complete    |
 | 2   | Coding standards & tooling                  | Foundation | not started |
 | 3   | Data model                                  | Foundation | not started |
 | 4   | Design & look                               | Foundation | not started |
@@ -38,8 +38,23 @@ Two real decisions still open once that exists: how the app calls OpenRouter to 
 
 PostHog should be wired in from the start too, session replay and heatmaps turned on, and tied to the signed-in user once Clerk resolves, so events are attached to a real person, not left anonymous.
 
-- [ ] Decide the approach
-- [ ] Write the spec
+The decided connection boundary is one authenticated HTTP stream per model call. The browser will start up to three requests concurrently later, rather than asking one server request to multiplex three providers; that gives every model its own cancellation, failure, and retry boundary. Each request runs Clerk authentication and Arcjet protection before calling OpenRouter, so a three-model prompt spends three units from the same user-keyed quota.
+
+Model calls use Vercel AI SDK's `streamText` with OpenRouter's AI SDK provider. The route returns the AI SDK UI message stream rather than exposing OpenRouter's raw SSE format, and it replaces provider failures with one safe retryable message while logging the real error on the server. The request signal is forwarded to the model call so disconnecting one response stops only that provider call.
+
+PostHog wraps each AI SDK model call with `withTracing`. The Clerk user ID is the PostHog distinct ID and each call carries a trace ID and browser session ID, which keeps server-side LLM generations linkable to client analytics and session replay. Prisma 7 is initialized for PostgreSQL with the `pg` driver adapter and a single reusable client, but domain tables remain Feature 3 work.
+
+- [x] Decide the approach
+- [x] Write the spec
+- [x] Install the exact integration dependencies and document required environment variables
+- [x] Configure Clerk authentication and protect the model endpoint
+- [x] Connect the LLM Arena Arcjet site and configure Shield, bot detection, prompt-injection detection, and a shared per-user quota
+- [x] Configure OpenRouter through Vercel AI SDK and stream one real model response
+- [x] Configure PostHog client analytics, Clerk identity, session replay, heatmaps, and server-side AI telemetry
+- [x] Configure Prisma 7 for PostgreSQL with its PostgreSQL driver adapter
+- [x] Verify the configured PostgreSQL connection with a live query
+- [x] Implement safe route errors and per-request cancellation
+- [x] Run every live integration smoke check; lint, typecheck, the webpack production build, PostgreSQL, OpenRouter, PostHog, Clerk, and Arcjet enforcement pass
 
 ### 2. Coding standards & tooling
 
