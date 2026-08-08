@@ -649,6 +649,14 @@ button:disabled {
   background: var(--raised);
 }
 
+.leaderboard-empty {
+  margin: 0;
+  padding: 44px 20px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .ranking-position {
   display: flex;
   align-items: center;
@@ -1310,6 +1318,18 @@ button:disabled {
   margin-top: 13px;
 }
 
+.model-answer .model-error {
+  color: var(--error);
+}
+
+.model-answer .model-placeholder {
+  color: var(--muted-soft);
+}
+
+.comparison-round + .comparison-round {
+  margin-top: 42px;
+}
+
 .model-footer {
   padding: 13px;
   border-top: 1px solid var(--border-soft);
@@ -1348,6 +1368,14 @@ button:disabled {
   border-color: var(--winner);
   background: var(--winner-soft);
   color: var(--winner);
+}
+
+.vote-button:disabled {
+  border-color: var(--border);
+  background: var(--raised);
+  color: var(--muted-soft);
+  cursor: not-allowed;
+  filter: none;
 }
 
 .metrics {

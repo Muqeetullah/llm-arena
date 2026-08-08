@@ -14,52 +14,24 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { AccountMenu } from "@/features/auth/components/account-menu";
+import type { LeaderboardRanking } from "@/features/leaderboard/types";
 
 type Board = "global" | "personal";
 
-const GLOBAL_RANKINGS = [
-  {
-    rank: 1,
-    initials: "L3",
-    model: "Llama 3.3 70B",
-    wins: 507,
-    total: 700,
-    winRate: 72,
-    ttft: "240ms",
-    speed: "82 t/s",
-  },
-  {
-    rank: 2,
-    initials: "G3",
-    model: "Gemma 3 27B",
-    wins: 438,
-    total: 682,
-    winRate: 64,
-    ttft: "180ms",
-    speed: "110 t/s",
-  },
-  {
-    rank: 3,
-    initials: "MS",
-    model: "Mistral Small 3.1",
-    wins: 391,
-    total: 665,
-    winRate: 59,
-    ttft: "310ms",
-    speed: "68 t/s",
-  },
-] as const;
+type LeaderboardPageProps = {
+  readonly error: string | null;
+  readonly globalRankings: readonly LeaderboardRanking[];
+  readonly personalRankings: readonly LeaderboardRanking[];
+};
 
-const PERSONAL_RANKINGS = [
-  { ...GLOBAL_RANKINGS[0], wins: 2, total: 4, winRate: 50 },
-  { ...GLOBAL_RANKINGS[1], wins: 1, total: 4, winRate: 25 },
-  { ...GLOBAL_RANKINGS[2], wins: 1, total: 4, winRate: 25 },
-] as const;
-
-export function LeaderboardPage() {
+export function LeaderboardPage({
+  error,
+  globalRankings,
+  personalRankings,
+}: LeaderboardPageProps) {
   const [board, setBoard] = useState<Board>("global");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const rankings = board === "global" ? GLOBAL_RANKINGS : PERSONAL_RANKINGS;
+  const rankings = board === "global" ? globalRankings : personalRankings;
 
   return (
     <div className="arena-app leaderboard-app">
@@ -181,6 +153,17 @@ export function LeaderboardPage() {
               <span>Avg. first token</span>
               <span>Avg. speed</span>
             </div>
+            {error ? (
+              <p className="leaderboard-empty" role="alert">
+                {error}
+              </p>
+            ) : rankings.length === 0 ? (
+              <p className="leaderboard-empty">
+                {board === "personal"
+                  ? "You have not voted in a completed comparison yet."
+                  : "No completed comparisons have received votes yet."}
+              </p>
+            ) : null}
             {rankings.map((ranking) => (
               <article
                 className={`ranking-row${ranking.rank === 1 ? " is-first" : ""}`}

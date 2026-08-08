@@ -17,6 +17,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import {
+  DefaultChatTransport,
+  isTextUIPart,
+  readUIMessageStream,
+  type UIMessage,
+} from "ai";
 
 import { AccountMenu } from "@/features/auth/components/account-menu";
 
@@ -33,9 +39,25 @@ type ModelResponse = {
   };
 };
 
+type ResponseStatus = "pending" | "streaming" | "completed" | "failed";
+
+type RoundResponse = {
+  readonly content: string;
+  readonly error: string | null;
+  readonly modelId: string;
+  readonly status: ResponseStatus;
+};
+
+type ComparisonRound = {
+  readonly id: string;
+  readonly prompt: string;
+  readonly responses: readonly RoundResponse[];
+  readonly winnerId: string | null;
+};
+
 const MODEL_RESPONSES: readonly ModelResponse[] = [
   {
-    id: "llama",
+    id: "meta-llama/llama-3.3-70b-instruct:free",
     initials: "L3",
     name: "Llama 3.3 70B",
     shortName: "Llama 3.3",
@@ -46,7 +68,7 @@ const MODEL_RESPONSES: readonly ModelResponse[] = [
     metrics: { ttft: "240ms", speed: "82 t/s", tokens: "158" },
   },
   {
-    id: "gemma",
+    id: "google/gemma-3-27b-it:free",
     initials: "G3",
     name: "Gemma 3 27B",
     shortName: "Gemma 3",
@@ -57,7 +79,7 @@ const MODEL_RESPONSES: readonly ModelResponse[] = [
     metrics: { ttft: "180ms", speed: "110 t/s", tokens: "142" },
   },
   {
-    id: "mistral",
+    id: "mistralai/mistral-small-3.1-24b-instruct:free",
     initials: "MS",
     name: "Mistral Small 3.1",
     shortName: "Mistral Small",
@@ -69,6 +91,21 @@ const MODEL_RESPONSES: readonly ModelResponse[] = [
   },
 ];
 
+const INITIAL_PROMPT =
+  "Explain quantum entanglement like I’m a curious high-school student. Use one analogy and avoid equations.";
+
+const INITIAL_ROUND: ComparisonRound = {
+  id: "initial-round",
+  prompt: INITIAL_PROMPT,
+  responses: MODEL_RESPONSES.map((model) => ({
+    content: model.paragraphs.join("\n\n"),
+    error: null,
+    modelId: model.id,
+    status: "completed",
+  })),
+  winnerId: null,
+};
+
 const RECENT_THREADS = [
   "Quantum entanglement basics",
   "React Server Components",
@@ -77,15 +114,30 @@ const RECENT_THREADS = [
 
 function ModelCard({
   model,
+  response,
+  showMetrics,
   winnerId,
   onVote,
 }: {
   model: ModelResponse;
+  response: RoundResponse;
+  showMetrics: boolean;
   winnerId: string | null;
   onVote: (modelId: string) => void;
 }) {
   const isWinner = winnerId === model.id;
   const hasWinner = winnerId !== null;
+  const isComplete = response.status === "completed";
+  const statusLabel =
+    response.status === "pending"
+      ? "Waiting"
+      : response.status === "streaming"
+        ? "Streaming"
+        : response.status === "failed"
+          ? "Failed"
+          : isWinner
+            ? "Winner"
+            : "Complete";
 
   return (
     <article className={`model-card${isWinner ? " is-winner" : ""}`}>
@@ -100,21 +152,40 @@ function ModelCard({
           </div>
         </div>
         <div className={`model-status${isWinner ? " is-winner" : ""}`}>
-          {isWinner ? <Award size={15} /> : <Check size={15} />}
-          <span>{isWinner ? "Winner" : "Complete"}</span>
+          {isWinner ? (
+            <Award size={15} />
+          ) : response.status === "failed" ? (
+            <X size={15} />
+          ) : (
+            <Check size={15} />
+          )}
+          <span>{statusLabel}</span>
         </div>
       </header>
 
       <div className="model-answer">
-        {model.paragraphs.map((paragraph) => (
-          <p key={paragraph}>{paragraph}</p>
-        ))}
+        {response.error ? (
+          <p className="model-error" role="alert">
+            {response.error}
+          </p>
+        ) : response.content ? (
+          response.content
+            .split(/\n{2,}/)
+            .map((paragraph) => <p key={paragraph}>{paragraph}</p>)
+        ) : (
+          <p className="model-placeholder" aria-live="polite">
+            {response.status === "pending"
+              ? "Waiting for this model…"
+              : "Generating an answer…"}
+          </p>
+        )}
       </div>
 
       <footer className="model-footer">
         <button
           className={isWinner ? "vote-button winner-button" : "vote-button"}
           type="button"
+          disabled={!isComplete}
           onClick={() => onVote(model.id)}
         >
           {isWinner ? (
@@ -126,26 +197,28 @@ function ModelCard({
           )}
         </button>
 
-        <details className="metrics">
-          <summary>
-            <ChevronDown size={14} aria-hidden="true" />
-            Metrics
-          </summary>
-          <dl>
-            <div>
-              <dt>TTFT</dt>
-              <dd>{model.metrics.ttft}</dd>
-            </div>
-            <div>
-              <dt>Speed</dt>
-              <dd>{model.metrics.speed}</dd>
-            </div>
-            <div>
-              <dt>Tokens</dt>
-              <dd>{model.metrics.tokens}</dd>
-            </div>
-          </dl>
-        </details>
+        {showMetrics ? (
+          <details className="metrics">
+            <summary>
+              <ChevronDown size={14} aria-hidden="true" />
+              Metrics
+            </summary>
+            <dl>
+              <div>
+                <dt>TTFT</dt>
+                <dd>{model.metrics.ttft}</dd>
+              </div>
+              <div>
+                <dt>Speed</dt>
+                <dd>{model.metrics.speed}</dd>
+              </div>
+              <div>
+                <dt>Tokens</dt>
+                <dd>{model.metrics.tokens}</dd>
+              </div>
+            </dl>
+          </details>
+        ) : null}
       </footer>
     </article>
   );
@@ -153,11 +226,19 @@ function ModelCard({
 
 export function ArenaPage() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [winnerId, setWinnerId] = useState<string | null>(null);
+  const [rounds, setRounds] = useState<readonly ComparisonRound[]>([
+    INITIAL_ROUND,
+  ]);
   const [selectedModelIds, setSelectedModelIds] = useState(
     MODEL_RESPONSES.map((model) => model.id),
   );
   const [prompt, setPrompt] = useState("");
+  const isSubmitting = rounds.some((round) =>
+    round.responses.some(
+      (response) =>
+        response.status === "pending" || response.status === "streaming",
+    ),
+  );
 
   const selectedModels = MODEL_RESPONSES.filter((model) =>
     selectedModelIds.includes(model.id),
@@ -181,12 +262,152 @@ export function ArenaPage() {
     }
   }
 
+  function updateRoundResponse(
+    roundId: string,
+    modelId: string,
+    update: (response: RoundResponse) => RoundResponse,
+  ) {
+    setRounds((currentRounds) =>
+      currentRounds.map((round) =>
+        round.id === roundId
+          ? {
+              ...round,
+              responses: round.responses.map((response) =>
+                response.modelId === modelId ? update(response) : response,
+              ),
+            }
+          : round,
+      ),
+    );
+  }
+
+  function selectWinner(roundId: string, modelId: string) {
+    setRounds((currentRounds) =>
+      currentRounds.map((round) =>
+        round.id === roundId ? { ...round, winnerId: modelId } : round,
+      ),
+    );
+  }
+
+  function conversationForModel(modelId: string, nextPrompt: string) {
+    const messages: UIMessage[] = [];
+
+    for (const round of rounds) {
+      const response = round.responses.find(
+        (candidate) => candidate.modelId === modelId,
+      );
+
+      if (response?.status === "completed") {
+        messages.push(
+          {
+            id: `${round.id}-user`,
+            role: "user",
+            parts: [{ type: "text", text: round.prompt }],
+          },
+          {
+            id: `${round.id}-${modelId}`,
+            role: "assistant",
+            parts: [{ type: "text", text: response.content }],
+          },
+        );
+      }
+    }
+
+    messages.push({
+      id: crypto.randomUUID(),
+      role: "user",
+      parts: [{ type: "text", text: nextPrompt }],
+    });
+
+    return messages;
+  }
+
+  async function requestModelResponse(
+    roundId: string,
+    modelId: string,
+    messages: UIMessage[],
+  ) {
+    try {
+      const transport = new DefaultChatTransport({
+        api: "/api/model-responses",
+        prepareSendMessagesRequest: ({ messages: requestMessages }) => ({
+          body: { messages: requestMessages, model: modelId },
+        }),
+      });
+      const stream = await transport.sendMessages({
+        abortSignal: undefined,
+        chatId: `${roundId}-${modelId}`,
+        messageId: undefined,
+        messages,
+        trigger: "submit-message",
+      });
+
+      updateRoundResponse(roundId, modelId, (response) => ({
+        ...response,
+        status: "streaming",
+      }));
+
+      for await (const message of readUIMessageStream({
+        stream,
+        terminateOnError: true,
+      })) {
+        const content = message.parts
+          .filter(isTextUIPart)
+          .map((part) => part.text)
+          .join("");
+
+        updateRoundResponse(roundId, modelId, (response) => ({
+          ...response,
+          content,
+          status: "streaming",
+        }));
+      }
+
+      updateRoundResponse(roundId, modelId, (response) => ({
+        ...response,
+        status: "completed",
+      }));
+    } catch (error) {
+      console.error("Unable to generate model response", { error, modelId });
+      updateRoundResponse(roundId, modelId, (response) => ({
+        ...response,
+        error: "That model could not finish its answer. Please try again.",
+        status: "failed",
+      }));
+    }
+  }
+
   function submitPrompt() {
-    if (!prompt.trim()) {
+    const nextPrompt = prompt.trim();
+
+    if (!nextPrompt || isSubmitting) {
       return;
     }
 
+    const roundId = crypto.randomUUID();
+    const modelRequests = selectedModelIds.map((modelId) => ({
+      messages: conversationForModel(modelId, nextPrompt),
+      modelId,
+    }));
+    const nextRound: ComparisonRound = {
+      id: roundId,
+      prompt: nextPrompt,
+      responses: selectedModelIds.map((modelId) => ({
+        content: "",
+        error: null,
+        modelId,
+        status: "pending",
+      })),
+      winnerId: null,
+    };
+
+    setRounds((currentRounds) => [...currentRounds, nextRound]);
     setPrompt("");
+    void Promise.allSettled(
+      modelRequests.map(({ messages, modelId }) =>
+        requestModelResponse(roundId, modelId, messages),
+      ),
+    );
   }
 
   return (
@@ -287,32 +508,50 @@ export function ArenaPage() {
         </header>
 
         <main className="conversation">
-          <div className="user-message-wrap">
-            <div className="user-message">
-              Explain quantum entanglement like I’m a curious high-school
-              student. Use one analogy and avoid equations.
-            </div>
-            <span className="message-meta">You · Just now</span>
-          </div>
+          {rounds.map((round, roundIndex) => {
+            const completedResponses = round.responses.filter(
+              (response) => response.status === "completed",
+            ).length;
 
-          <div className="comparison-heading">
-            <div>
-              <span className="eyebrow">Round one</span>
-              <h2>Compare the responses</h2>
-            </div>
-            <p>Three complete answers · Pick the clearest one</p>
-          </div>
+            return (
+              <section className="comparison-round" key={round.id}>
+                <div className="user-message-wrap">
+                  <div className="user-message">{round.prompt}</div>
+                  <span className="message-meta">You · Just now</span>
+                </div>
 
-          <div className="response-grid">
-            {MODEL_RESPONSES.map((model) => (
-              <ModelCard
-                key={model.id}
-                model={model}
-                winnerId={winnerId}
-                onVote={setWinnerId}
-              />
-            ))}
-          </div>
+                <div className="comparison-heading">
+                  <div>
+                    <span className="eyebrow">Round {roundIndex + 1}</span>
+                    <h2>Compare the responses</h2>
+                  </div>
+                  <p>
+                    {completedResponses} of {round.responses.length} answers
+                    complete
+                  </p>
+                </div>
+
+                <div className="response-grid">
+                  {round.responses.map((response) => {
+                    const model = MODEL_RESPONSES.find(
+                      (candidate) => candidate.id === response.modelId,
+                    );
+
+                    return model ? (
+                      <ModelCard
+                        key={model.id}
+                        model={model}
+                        response={response}
+                        showMetrics={round.id === INITIAL_ROUND.id}
+                        winnerId={round.winnerId}
+                        onVote={(modelId) => selectWinner(round.id, modelId)}
+                      />
+                    ) : null;
+                  })}
+                </div>
+              </section>
+            );
+          })}
         </main>
 
         <div className="composer-dock">
@@ -357,6 +596,7 @@ export function ArenaPage() {
                     event.key === "Enter" &&
                     (event.metaKey || event.ctrlKey)
                   ) {
+                    event.preventDefault();
                     submitPrompt();
                   }
                 }}
@@ -367,7 +607,7 @@ export function ArenaPage() {
                   className="send-button"
                   type="button"
                   aria-label="Send prompt"
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || isSubmitting}
                   onClick={submitPrompt}
                 >
                   <ArrowUp size={20} />
