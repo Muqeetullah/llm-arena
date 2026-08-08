@@ -2,13 +2,32 @@
   "name": "llm-arena",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "check": "npm run format:check && npm run lint && npm run typecheck",
+    "format": "prettier --write --ignore-unknown .",
+    "format:check": "prettier --check --ignore-unknown .",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix --max-warnings=0",
+    "precommit": "npm run typecheck && lint-staged",
+    "prepare": "simple-git-hooks",
+    "typecheck": "prisma generate && next typegen && tsc --noEmit",
     "prisma:generate": "prisma generate"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npm run precommit"
+  },
+  "lint-staged": {
+    "*.{js,cjs,mjs,ts,tsx}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{css,json,jsonc,md,mdx,yaml,yml}": "prettier --write"
   },
   "dependencies": {
     "@ai-sdk/react": "3.0.239",
@@ -20,6 +39,7 @@
     "@prisma/client": "^7.9.1",
     "ai": "6.0.237",
     "dotenv": "^17.4.2",
+    "lucide-react": "^1.30.0",
     "next": "16.3.0",
     "pg": "^8.22.0",
     "posthog-js": "^1.414.0",
@@ -37,7 +57,11 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "eslint-config-prettier": "^10.1.8",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.9.6",
     "prisma": "^7.9.1",
+    "simple-git-hooks": "^2.13.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

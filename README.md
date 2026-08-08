@@ -9,7 +9,23 @@ Send one prompt to free OpenRouter models, compare their independently streamed 
 3. Generate the Prisma client with `npm run prisma:generate`.
 4. Start the app with `npm run dev`.
 
+## Development
+
+Run the complete local quality gate before handing off a change:
+
+```bash
+npm run check
+npm run build
+```
+
+`npm install` configures a pre-commit hook that type-checks the project and fixes
+lint and formatting issues in staged files. See
+[`docs/coding-standards.md`](docs/coding-standards.md) for the architectural,
+TypeScript, Next.js, accessibility, error-handling, and review conventions.
+
 The model endpoint is `POST /api/model-responses`. It requires a Clerk session and accepts one free OpenRouter model per request. Multiple models must be called with separate concurrent requests so their streams fail and cancel independently.
+
+The Arena, Leaderboard, Models catalog, and model-response API require a Clerk session. `/sign-in` and `/sign-up` are the public authentication routes. Clerk redirect URLs are configured in `.env.example` and should also be added to the deployment environment.
 
 ## Getting Started
 

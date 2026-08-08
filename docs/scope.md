@@ -19,9 +19,9 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | #   | Feature                                     | Phase      | Status      |
 | --- | ------------------------------------------- | ---------- | ----------- |
 | 1   | Connecting to a model                       | Foundation | complete    |
-| 2   | Coding standards & tooling                  | Foundation | not started |
-| 3   | Data model                                  | Foundation | not started |
-| 4   | Design & look                               | Foundation | not started |
+| 2   | Coding standards & tooling                  | Foundation | complete    |
+| 3   | Data model                                  | Foundation | complete    |
+| 4   | Design & look                               | Foundation | complete    |
 | 5   | Model picker                                | Slice 1    | not started |
 | 6   | Send a prompt, parallel streams, and voting | Slice 1    | not started |
 | 7   | App shell & thread history                  | Slice 2    | not started |
@@ -60,22 +60,66 @@ PostHog wraps each AI SDK model call with `withTracing`. The Clerk user ID is th
 
 Write down the real conventions for this project once it actually exists, then install linting, formatting, and a pre-commit hook that actually enforces them.
 
-- [ ] Decide the approach
-- [ ] Install lint, format, and whatever else is needed, and write it up in a coding-standards doc
+Keep Next.js 16's Core Web Vitals and TypeScript ESLint presets as the correctness baseline, with project rules layered on top rather than replacing framework defaults. Prettier owns formatting and `eslint-config-prettier` keeps that responsibility separate from ESLint. A lightweight `simple-git-hooks` pre-commit hook runs the full TypeScript check and uses `lint-staged` to fix and re-stage lint and formatting changes; `npm run check` is the full-repository quality gate for local work and CI. No test runner or browser automation is added, in keeping with the project-wide tooling decision.
+
+- [x] Decide the approach
+- [x] Add project lint and formatting configuration
+- [x] Add scripts and an enforced pre-commit hook
+- [x] Write the coding standards document
+- [x] Verify formatting, lint, typecheck, the hook path, and a production build
 
 ### 3. Data model
 
 The core things every feature depends on: users tied to Clerk, threads, each model's own messages inside a thread, and votes. A vote should only ever be possible on a turn where two or more models actually answered.
 
-- [ ] Decide the approach
-- [ ] Build it
+Use a turn as the shared prompt boundary inside a thread, with one independently stateful response per selected OpenRouter model. Keep the Clerk user ID as the application's user key; snapshot each model's ID and display name on its response so history remains truthful if the live catalog changes. Persist raw token counts and timing measurements, then derive totals, speed, win rate, and leaderboard aggregates rather than storing values that can drift. A vote belongs to one user, one turn, and one of that turn's completed responses. PostgreSQL enforces both the response/turn relationship and the rule that at least two responses must be complete before the vote is inserted or changed.
+
+- [x] Decide the approach
+- [x] Build it
+  - [x] Model users, threads, ordered turns, independent model responses, usage, timing, and votes
+  - [x] Add the initial migration and database voting invariant
+  - [x] Generate the client and validate the schema, migration, and full project quality gates
 
 ### 4. Design & look
 
-A coffee or dark brown background, warm, not neutral gray or true black. One accent color, rust, used only for things you interact with, buttons, links, focus states, the win-rate bar, never as decoration. Because the background and the accent are both warm tones from the same family, the accent has to stay clearly brighter and more saturated than the background, enough that a button never blends into the page behind it, that's a real risk with two warm colors this close and worth checking by eye, not just by the numbers. Blue, indigo, and purple are never the accent, under any circumstance. Green is reserved only for marking a winner, red only for errors, never reused for anything else. Contrast should genuinely hold up in both light and dark mode, not just look fine at a glance.
+A warm ivory and cream background, not neutral gray or stark white. One accent color, rust, is used only for things you interact with—buttons, links, focus states, and the win-rate bar—never as decoration. The rust must stay clearly darker and more saturated than its surrounding surface so controls remain unmistakable. Blue, indigo, and purple are never the accent, under any circumstance. Green is reserved only for marking a winner, red only for errors, never reused for anything else. The application uses this light theme only; there is no dark mode or theme toggle.
 
-- [ ] Decide the approach
-- [ ] Build it
+The visual direction is a **coffeehouse scorecard**: warm and editorial enough to feel human, structured and precise enough to make model comparisons trustworthy. It should feel like a focused evaluation workspace, not a generic SaaS dashboard or a neon AI demo. Use flat color, clear rules, compact data, and generous reading space; avoid gradients, glows, glass effects, oversized pills, and decorative illustrations.
+
+Use one light theme with these semantic tokens, adjusting only if implementation-level visual checks expose a real problem:
+
+| Role             | Value     |
+| ---------------- | --------- |
+| Page             | `#F7F0E8` |
+| Surface          | `#FFF9F4` |
+| Raised surface   | `#F1E5DA` |
+| Border           | `#D8C3B4` |
+| Primary text     | `#2C1A13` |
+| Secondary text   | `#725C50` |
+| Interactive rust | `#B44318` |
+| Winner only      | `#287446` |
+| Error only       | `#B43A32` |
+
+The core text pairs have WCAG AA contrast, including secondary copy and rust links; filled rust buttons use the light surface color for text. Focus rings use rust and must remain visible outside the control boundary. Do not use color as the only signal for winner, error, selection, loading, or rank.
+
+Keep Geist as the main typeface. Use a restrained display treatment—larger Geist with tight tracking and strong weight—for page titles and the wordmark rather than adding a novelty font. Use Geist Mono only for measurements, token counts, latency, rank, and compact model identifiers. Default body copy stays at 15–16px with comfortable line height; model responses prioritize readability over dashboard density.
+
+Use an 8px spacing base, 12px control corners, and 16px panel corners. Borders, spacing, and type weight establish hierarchy; shadows are rare and shallow. Use one consistent open-source outline icon set at 16–20px, with text labels for primary navigation. Model avatars are neutral initials, never provider colors, so presentation cannot bias a vote.
+
+Preserve the sketches' information architecture: fixed sidebar, compact top bar, scrollable conversation, and a prompt composer anchored to the bottom. The arena is the visual centerpiece, not the navigation. On wide screens, answers form equal-width columns with aligned headers and metric footers. On smaller screens, the sidebar becomes a drawer and answer cards stack in full; nothing shrinks below a readable response width. The composer stays reachable but must not cover the final lines of an answer.
+
+Response cards share the same neutral treatment before voting. Their streaming, complete, failed, and selected states differ through labels, icons, border treatment, and color where permitted. Voting is a clear rust action only after at least two responses complete. Once cast, the selected response gets a winner label and restrained green border; losing responses remain fully legible. Metrics are collapsed by default and reveal a compact aligned row for time to first token, speed, and total tokens.
+
+The leaderboard should read like a publication table, not a collection of cards: strong rank and win record, quiet secondary performance measures, fine row dividers, and a restrained raised surface for first place. The models catalog may use cards because each model is an independent browseable object, but keep their heights, label positions, and numeric columns consistent.
+
+Motion is functional and short: 120–180ms state transitions, a subtle streaming caret, and no entrance choreography. Respect reduced-motion preferences.
+
+- [x] Decide the approach
+- [x] Build it
+  - [x] Create the Superdesign design system and Arena workspace draft
+  - [x] Implement the responsive app shell, comparison cards, composer, and theme
+  - [x] Add accessible voting, model-chip, metrics, navigation, and mobile states
+  - [x] Verify formatting, lint, typecheck, production build, and local response
 
 ## Slice 1: Core arena loop
 
@@ -101,7 +145,7 @@ Every prompt sent, every answer finishing, and every vote cast should be tracked
 
 ### 7. App shell & thread history
 
-The frame everything else sits inside: a top bar and sidebar that stay in place while the page scrolls, the thread's name, and each model's win record shown right there (shrinking down to a small dot and number if it gets crowded). The sidebar lists a signed-in user's own past threads so the tool actually feels usable across visits, not just in one sitting.
+The frame everything else sits inside: a top bar and sidebar that stay in place while the page scrolls, plus the thread's name. Win records belong on the leaderboard, where the full model name and "won X of Y" context make them understandable; do not compress them into initials and fractions in the Arena header. The sidebar lists a signed-in user's own past threads so the tool actually feels usable across visits, not just in one sitting.
 
 - [ ] Decide the approach
 - [ ] Build it
