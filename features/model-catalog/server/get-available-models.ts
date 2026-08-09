@@ -2,6 +2,10 @@ import "server-only";
 
 import { z } from "zod";
 
+import {
+  isFreeModelId,
+  type AvailableModel,
+} from "@/features/model-catalog/types";
 import { serverEnv } from "@/features/model-connection/server/env";
 
 const openRouterModelSchema = z
@@ -30,16 +34,6 @@ const openRouterModelsResponseSchema = z.object({
   data: z.array(openRouterModelSchema),
 });
 
-export type AvailableModel = {
-  readonly id: string;
-  readonly name: string;
-  readonly author: string;
-  readonly description: string;
-  readonly contextLength: number;
-  readonly inputModalities: readonly string[];
-  readonly capabilities: readonly string[];
-};
-
 export type AvailableModelsResult = {
   readonly models: readonly AvailableModel[];
   readonly error: string | null;
@@ -60,11 +54,11 @@ export async function getAvailableModels(): Promise<AvailableModelsResult> {
     const response = await fetch(
       "https://openrouter.ai/api/v1/models?sort=context-high-to-low",
       {
-        cache: "no-store",
         headers: {
           Authorization: `Bearer ${serverEnv.openRouterApiKey}`,
           "X-Title": "LLM Arena",
         },
+        next: { revalidate: 300 },
         signal: AbortSignal.timeout(12_000),
       },
     );
@@ -77,8 +71,11 @@ export async function getAvailableModels(): Promise<AvailableModelsResult> {
     const models = payload.data
       .filter(
         (model) =>
+          isFreeModelId(model.id) &&
           isFreePrice(model.pricing.prompt) &&
           isFreePrice(model.pricing.completion) &&
+          model.architecture.input_modalities.includes("text") &&
+          model.architecture.output_modalities.length > 0 &&
           model.architecture.output_modalities.every(
             (modality) => modality === "text",
           ),

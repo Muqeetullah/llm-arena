@@ -77,6 +77,7 @@ model ModelResponse {
   durationMs         Int?
 
   createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  startedAt    DateTime? @db.Timestamptz(3)
   firstTokenAt DateTime? @db.Timestamptz(3)
   completedAt  DateTime? @db.Timestamptz(3)
 

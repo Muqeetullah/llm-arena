@@ -1,5 +1,9 @@
 import "server-only";
 
+import { APICallError, RetryError } from "ai";
+
+import type { ModelResponseErrorCode } from "@/features/arena/types";
+
 type ModelErrorContext = Readonly<{
   error: unknown;
   model: string;
@@ -32,4 +36,42 @@ export const logModelError = ({
     traceId,
     userId,
   });
+};
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error
+    ? error.message.toLowerCase()
+    : String(error).toLowerCase();
+
+export const classifyModelError = (error: unknown): ModelResponseErrorCode => {
+  const cause = RetryError.isInstance(error) ? error.lastError : error;
+
+  if (APICallError.isInstance(cause)) {
+    if (cause.statusCode === 408) return "TIMEOUT";
+    if (cause.statusCode === 429) return "RATE_LIMITED";
+    if (cause.statusCode === 404 || cause.statusCode === 422) {
+      return "MODEL_UNAVAILABLE";
+    }
+  }
+
+  const message = errorMessage(cause);
+  if (
+    message.includes("deadline_exceeded") ||
+    message.includes("timed out") ||
+    message.includes("timeout")
+  ) {
+    return "TIMEOUT";
+  }
+  if (message.includes("rate limit") || message.includes("too many requests")) {
+    return "RATE_LIMITED";
+  }
+  if (
+    message.includes("no endpoints") ||
+    message.includes("model not found") ||
+    message.includes("model unavailable")
+  ) {
+    return "MODEL_UNAVAILABLE";
+  }
+
+  return "PROVIDER_ERROR";
 };
