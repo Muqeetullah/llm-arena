@@ -68,6 +68,8 @@ type ComparisonRound = {
 };
 
 const MAX_SELECTED_MODELS = 3;
+const PERSISTENCE_POLL_INTERVAL_MS = 150;
+const PERSISTENCE_CONFIRMATION_TIMEOUT_MS = 5_000;
 
 function modelFailure(
   error: unknown,
@@ -632,7 +634,9 @@ export function ArenaPage({
       }
 
       let confirmedResponse = null;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      const persistenceDeadline =
+        Date.now() + PERSISTENCE_CONFIRMATION_TIMEOUT_MS;
+      while (true) {
         const persistedResult = await fetch(
           `/api/model-responses?id=${encodeURIComponent(responseId)}`,
           { cache: "no-store" },
@@ -644,7 +648,17 @@ export function ArenaPage({
         if (!confirmedResponse || confirmedResponse.status !== "in_progress") {
           break;
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 150));
+
+        const remainingMs = persistenceDeadline - Date.now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        await new Promise((resolve) =>
+          window.setTimeout(
+            resolve,
+            Math.min(PERSISTENCE_POLL_INTERVAL_MS, remainingMs),
+          ),
+        );
       }
       if (!confirmedResponse) {
         throw new Error("The server returned an invalid response status.");

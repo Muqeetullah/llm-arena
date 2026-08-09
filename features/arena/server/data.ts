@@ -375,12 +375,25 @@ export async function getResponseResult(userId: string, responseId: string) {
 
 export async function castVote(userId: string, input: CastVoteInput) {
   const turn = await database.turn.findFirst({
-    select: { id: true },
+    select: {
+      id: true,
+      responses: {
+        select: { id: true },
+        where: { status: "COMPLETED" },
+      },
+    },
     where: { id: input.turnId, thread: { ownerId: userId } },
   });
 
   if (!turn) {
     return null;
+  }
+
+  if (
+    turn.responses.length < 2 ||
+    !turn.responses.some((response) => response.id === input.responseId)
+  ) {
+    throw new Error("A vote needs at least two completed answers.");
   }
 
   return database.vote.upsert({
