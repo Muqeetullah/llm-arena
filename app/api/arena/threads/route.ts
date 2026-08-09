@@ -8,10 +8,10 @@ const jsonError = (error: string, status: number): Response =>
 
 export async function GET(request: Request) {
   const { userId } = await auth();
-  if (!userId) return jsonError("Sign in to view comparisons.", 401);
 
   const rawThreadId = new URL(request.url).searchParams.get("id");
   if (!rawThreadId) {
+    if (!userId) return jsonError("Sign in to view your comparisons.", 401);
     return Response.json(await getRecentThreads(userId), {
       headers: { "Cache-Control": "no-store" },
     });
