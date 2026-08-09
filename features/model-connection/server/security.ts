@@ -1,9 +1,11 @@
 import "server-only";
 
 import arcjet, {
+  type ArcjetNextRequest,
   detectBot,
   detectPromptInjection,
   shield,
+  slidingWindow,
   tokenBucket,
 } from "@arcjet/next";
 import { serverEnv } from "./env";
@@ -26,6 +28,22 @@ const modelRequestGuard = arcjetClient
   )
   .withRule(detectPromptInjection({ mode: "LIVE" }));
 
+const publicThreadReadGuard = arcjetClient
+  .withRule(
+    detectBot({
+      mode: "LIVE",
+      allow: ["CATEGORY:PREVIEW", "CATEGORY:SOCIAL", "CATEGORY:SLACK"],
+    }),
+  )
+  .withRule(
+    slidingWindow({
+      mode: "LIVE",
+      characteristics: ["ip.src"],
+      interval: "1m",
+      max: 60,
+    }),
+  );
+
 type ProtectModelRequestOptions = Readonly<{
   correlationId: string;
   promptText: string;
@@ -45,3 +63,6 @@ export const protectModelRequest = ({
     requested: 1,
     userId,
   });
+
+export const protectPublicThreadRead = (request: ArcjetNextRequest) =>
+  publicThreadReadGuard.protect(request);
