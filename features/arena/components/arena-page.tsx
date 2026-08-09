@@ -6,123 +6,233 @@ import {
   Bot,
   Check,
   ChevronDown,
+  CircleAlert,
   Database,
   LayoutGrid,
   Menu,
   Plus,
+  RefreshCw,
   Share2,
+  Sparkles,
   Swords,
   Trophy,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
-import {
-  DefaultChatTransport,
-  isTextUIPart,
-  readUIMessageStream,
-  type UIMessage,
-} from "ai";
+import posthog from "posthog-js";
+import { useMemo, useRef, useState } from "react";
+import { DefaultChatTransport, isTextUIPart, readUIMessageStream } from "ai";
 
 import { AccountMenu } from "@/features/auth/components/account-menu";
-
-type ModelResponse = {
-  readonly id: string;
-  readonly initials: string;
-  readonly name: string;
-  readonly shortName: string;
-  readonly paragraphs: readonly string[];
-  readonly metrics: {
-    readonly ttft: string;
-    readonly speed: string;
-    readonly tokens: string;
-  };
-};
+import { ModelResponse } from "@/features/arena/components/model-response";
+import {
+  parseCreatedTurn,
+  parseResponseResult,
+  parseStoredThread,
+  type ArenaUIMessage,
+  type ModelResponseErrorCode,
+  type ResponseMetrics,
+  type StoredThread,
+  type ThreadSummary,
+} from "@/features/arena/types";
+import { ModelPicker } from "@/features/model-catalog/components/model-picker";
+import {
+  modelInitials,
+  type ModelOption,
+} from "@/features/model-catalog/types";
 
 type ResponseStatus = "pending" | "streaming" | "completed" | "failed";
 
+type ResponseFailure = {
+  readonly description: string;
+  readonly title: string;
+};
+
 type RoundResponse = {
   readonly content: string;
-  readonly error: string | null;
+  readonly error: ResponseFailure | null;
+  readonly id: string;
+  readonly metrics: ResponseMetrics | null;
   readonly modelId: string;
+  readonly modelName: string;
   readonly status: ResponseStatus;
 };
 
 type ComparisonRound = {
-  readonly id: string;
   readonly prompt: string;
   readonly responses: readonly RoundResponse[];
+  readonly turnId: string;
+  readonly voteError: string | null;
+  readonly voteStatus: "idle" | "saving";
   readonly winnerId: string | null;
 };
 
-const MODEL_RESPONSES: readonly ModelResponse[] = [
-  {
-    id: "meta-llama/llama-3.3-70b-instruct:free",
-    initials: "L3",
-    name: "Llama 3.3 70B",
-    shortName: "Llama 3.3",
-    paragraphs: [
-      "Imagine two magical coins created as a pair. You give one to a friend who travels to Mars while you keep the other on Earth. Whenever you check yours and find heads, your friend’s coin is guaranteed to show tails—even though neither coin had chosen a side before either of you looked.",
-      "Entangled particles behave a little like that pair. Their properties are described together, so measuring one lets you predict the matching result for the other. The connection is immediate, but it cannot be used to send a message faster than light.",
-    ],
-    metrics: { ttft: "240ms", speed: "82 t/s", tokens: "158" },
-  },
-  {
-    id: "google/gemma-3-27b-it:free",
-    initials: "G3",
-    name: "Gemma 3 27B",
-    shortName: "Gemma 3",
-    paragraphs: [
-      "Picture a pair of dancers who have rehearsed one shared routine so perfectly that, even in different theaters, their moves always fit together. If one spins clockwise when the curtain rises, you know the other will spin counterclockwise.",
-      "Quantum entanglement is a shared state between particles. Before measurement, physics does not assign each particle its own definite answer. When one is measured, the pair produces linked results—no matter how far apart the particles have traveled.",
-    ],
-    metrics: { ttft: "180ms", speed: "110 t/s", tokens: "142" },
-  },
-  {
-    id: "mistralai/mistral-small-3.1-24b-instruct:free",
-    initials: "MS",
-    name: "Mistral Small 3.1",
-    shortName: "Mistral Small",
-    paragraphs: [
-      "Think of two sealed mystery boxes prepared by the same strange rule. You take one across the world. When you open it and discover a red ball, you instantly know the other box will reveal blue—not because a signal raced between them, but because the pair must be described as one system.",
-      "That is the heart of entanglement: two particles can share a single quantum description. Their measurements are more strongly correlated than ordinary hidden instructions can explain, which is why Einstein called it ‘spooky action at a distance.’",
-    ],
-    metrics: { ttft: "310ms", speed: "68 t/s", tokens: "164" },
-  },
-];
+const MAX_SELECTED_MODELS = 3;
 
-const INITIAL_PROMPT =
-  "Explain quantum entanglement like I’m a curious high-school student. Use one analogy and avoid equations.";
+function modelFailure(
+  error: unknown,
+  hasPartialResponse: boolean,
+): ResponseFailure {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
 
-const INITIAL_ROUND: ComparisonRound = {
-  id: "initial-round",
-  prompt: INITIAL_PROMPT,
-  responses: MODEL_RESPONSES.map((model) => ({
-    content: model.paragraphs.join("\n\n"),
-    error: null,
-    modelId: model.id,
-    status: "completed",
-  })),
-  winnerId: null,
-};
+  if (hasPartialResponse) {
+    return {
+      title: "Response interrupted",
+      description:
+        "The model stopped before it finished. Retry to generate a fresh response.",
+    };
+  }
 
-const RECENT_THREADS = [
-  "Quantum entanglement basics",
-  "React Server Components",
-  "The perfect carbonara",
-] as const;
+  if (message.includes("without a text answer")) {
+    return {
+      title: "No text answer",
+      description:
+        "The model used its generation budget without producing a visible answer. Retry it or choose another model.",
+    };
+  }
+
+  if (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("abort")
+  ) {
+    return {
+      title: "Response timed out",
+      description:
+        "The model took too long to answer. Retry this response when you’re ready.",
+    };
+  }
+
+  if (
+    error instanceof TypeError ||
+    message.includes("fetch") ||
+    message.includes("network") ||
+    message.includes("connect")
+  ) {
+    return {
+      title: "Connection problem",
+      description:
+        "We couldn’t reach this model. Check your connection and try again.",
+    };
+  }
+
+  return {
+    title: "Model unavailable",
+    description:
+      "This model couldn’t complete the request right now. You can retry just this response.",
+  };
+}
+
+function storedModelFailure(
+  errorCode: string | null,
+  hasPartialResponse: boolean,
+): ResponseFailure {
+  if (hasPartialResponse) {
+    return modelFailure(new Error("interrupted"), true);
+  }
+
+  switch (errorCode as ModelResponseErrorCode | null) {
+    case "EMPTY_RESPONSE":
+      return modelFailure(new Error("without a text answer"), false);
+    case "TIMEOUT":
+    case "ABORTED":
+      return modelFailure(new Error("timed out"), false);
+    case "RATE_LIMITED":
+      return {
+        title: "Model rate-limited",
+        description:
+          "This free provider is busy right now. Retry this response shortly or choose another model.",
+      };
+    case "MODEL_UNAVAILABLE":
+      return {
+        title: "Model unavailable",
+        description:
+          "OpenRouter could not find a healthy endpoint for this model. Retry it or choose another model.",
+      };
+    case "REQUEST_BLOCKED":
+      return {
+        title: "Request blocked",
+        description:
+          "The request did not pass the safety or usage check. Rephrase it or try again later.",
+      };
+    default:
+      return modelFailure(new Error("provider error"), false);
+  }
+}
+
+async function responseError(response: Response): Promise<string> {
+  try {
+    const payload: unknown = await response.json();
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "error" in payload &&
+      typeof payload.error === "string"
+    ) {
+      return payload.error;
+    }
+  } catch {
+    // Use the stable fallback below when the server did not return JSON.
+  }
+
+  return "The request could not be completed. Please try again.";
+}
+
+function initialSelectedModelIds(models: readonly ModelOption[]): string[] {
+  return models.slice(0, MAX_SELECTED_MODELS).map((model) => model.id);
+}
+
+function comparisonRounds(storedThread: StoredThread): ComparisonRound[] {
+  return storedThread.rounds.map((round) => ({
+    prompt: round.prompt,
+    responses: round.responses.map((storedResponse) => {
+      const wasInterrupted =
+        storedResponse.status === "pending" ||
+        storedResponse.status === "streaming";
+      return {
+        content: storedResponse.content,
+        error:
+          storedResponse.status === "failed"
+            ? storedModelFailure(
+                storedResponse.errorCode,
+                storedResponse.content.length > 0,
+              )
+            : wasInterrupted
+              ? {
+                  title: "Response interrupted",
+                  description:
+                    "This saved generation did not finish. Retry just this response.",
+                }
+              : null,
+        id: storedResponse.id,
+        metrics: storedResponse.metrics,
+        modelId: storedResponse.modelId,
+        modelName: storedResponse.modelName,
+        status: wasInterrupted ? ("failed" as const) : storedResponse.status,
+      };
+    }),
+    turnId: round.turnId,
+    voteError: null,
+    voteStatus: "idle" as const,
+    winnerId: round.winnerId,
+  }));
+}
 
 function ModelCard({
+  canVote,
   model,
   response,
-  showMetrics,
+  isVoteSaving,
   winnerId,
+  onRetry,
   onVote,
 }: {
-  model: ModelResponse;
+  canVote: boolean;
+  model: ModelOption;
   response: RoundResponse;
-  showMetrics: boolean;
+  isVoteSaving: boolean;
   winnerId: string | null;
+  onRetry: () => void;
   onVote: (modelId: string) => void;
 }) {
   const isWinner = winnerId === model.id;
@@ -144,34 +254,68 @@ function ModelCard({
       <header className="model-header">
         <div className="model-identity">
           <span className="model-avatar" aria-hidden="true">
-            {model.initials}
+            {modelInitials(model.name)}
           </span>
           <div>
             <h3>{model.name}</h3>
             <span className="model-subtitle">OpenRouter free tier</span>
           </div>
         </div>
-        <div className={`model-status${isWinner ? " is-winner" : ""}`}>
-          {isWinner ? (
-            <Award size={15} />
-          ) : response.status === "failed" ? (
-            <X size={15} />
-          ) : (
-            <Check size={15} />
-          )}
-          <span>{statusLabel}</span>
+        <div className="model-header-actions">
+          <div className={`model-status${isWinner ? " is-winner" : ""}`}>
+            {isWinner ? (
+              <Award size={14} />
+            ) : response.status === "failed" ? (
+              <X size={14} />
+            ) : (
+              <Check size={14} />
+            )}
+            <span>{statusLabel}</span>
+          </div>
+          <button
+            className={isWinner ? "vote-button winner-button" : "vote-button"}
+            type="button"
+            disabled={!isComplete || !canVote || isVoteSaving}
+            onClick={() => onVote(model.id)}
+          >
+            {isWinner ? (
+              <>
+                <Check size={13} aria-hidden="true" /> Selected
+              </>
+            ) : (
+              <>
+                <Sparkles size={13} aria-hidden="true" />
+                {hasWinner ? "Pick instead" : "Pick this one"}
+              </>
+            )}
+          </button>
         </div>
       </header>
 
       <div className="model-answer">
         {response.error ? (
-          <p className="model-error" role="alert">
-            {response.error}
-          </p>
+          <div className="response-fallback" role="alert">
+            <span className="response-fallback-icon" aria-hidden="true">
+              <CircleAlert size={19} />
+            </span>
+            <div>
+              <h4>{response.error.title}</h4>
+              <p>{response.error.description}</p>
+            </div>
+            <button
+              className="retry-response-button"
+              type="button"
+              onClick={onRetry}
+            >
+              <RefreshCw size={13} aria-hidden="true" />
+              Retry response
+            </button>
+          </div>
         ) : response.content ? (
-          response.content
-            .split(/\n{2,}/)
-            .map((paragraph) => <p key={paragraph}>{paragraph}</p>)
+          <ModelResponse
+            content={response.content}
+            isStreaming={response.status === "streaming"}
+          />
         ) : (
           <p className="model-placeholder" aria-live="polite">
             {response.status === "pending"
@@ -181,23 +325,8 @@ function ModelCard({
         )}
       </div>
 
-      <footer className="model-footer">
-        <button
-          className={isWinner ? "vote-button winner-button" : "vote-button"}
-          type="button"
-          disabled={!isComplete}
-          onClick={() => onVote(model.id)}
-        >
-          {isWinner ? (
-            <>
-              <Award size={16} /> Selected winner
-            </>
-          ) : (
-            <>{hasWinner ? "Change vote" : "Vote for this model"}</>
-          )}
-        </button>
-
-        {showMetrics ? (
+      {response.metrics ? (
+        <footer className="model-footer">
           <details className="metrics">
             <summary>
               <ChevronDown size={14} aria-hidden="true" />
@@ -206,43 +335,86 @@ function ModelCard({
             <dl>
               <div>
                 <dt>TTFT</dt>
-                <dd>{model.metrics.ttft}</dd>
+                <dd>{response.metrics.timeToFirstTokenMs}ms</dd>
               </div>
               <div>
                 <dt>Speed</dt>
-                <dd>{model.metrics.speed}</dd>
+                <dd>
+                  {response.metrics.durationMs > 0
+                    ? `${((response.metrics.outputTokens * 1_000) / Math.max(1, response.metrics.durationMs - response.metrics.timeToFirstTokenMs)).toFixed(1)} t/s`
+                    : "—"}
+                </dd>
               </div>
               <div>
                 <dt>Tokens</dt>
-                <dd>{model.metrics.tokens}</dd>
+                <dd>{response.metrics.outputTokens}</dd>
               </div>
             </dl>
           </details>
-        ) : null}
-      </footer>
+        </footer>
+      ) : null}
     </article>
   );
 }
 
-export function ArenaPage() {
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [rounds, setRounds] = useState<readonly ComparisonRound[]>([
-    INITIAL_ROUND,
-  ]);
-  const [selectedModelIds, setSelectedModelIds] = useState(
-    MODEL_RESPONSES.map((model) => model.id),
-  );
-  const [prompt, setPrompt] = useState("");
-  const isSubmitting = rounds.some((round) =>
-    round.responses.some(
-      (response) =>
-        response.status === "pending" || response.status === "streaming",
-    ),
-  );
+type ArenaPageProps = {
+  readonly catalogError: string | null;
+  readonly initialThread: StoredThread | null;
+  readonly initialThreads: readonly ThreadSummary[];
+  readonly models: readonly ModelOption[];
+};
 
-  const selectedModels = MODEL_RESPONSES.filter((model) =>
-    selectedModelIds.includes(model.id),
+export function ArenaPage({
+  models,
+  catalogError,
+  initialThread,
+  initialThreads,
+}: ArenaPageProps) {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [rounds, setRounds] = useState<readonly ComparisonRound[]>(() =>
+    initialThread ? comparisonRounds(initialThread) : [],
   );
+  const [threads, setThreads] =
+    useState<readonly ThreadSummary[]>(initialThreads);
+  const [selectedModelIds, setSelectedModelIds] = useState(() => {
+    const storedModelIds = initialThread?.rounds
+      .at(-1)
+      ?.responses.map((response) => response.modelId)
+      .filter((modelId) => models.some((model) => model.id === modelId));
+    return storedModelIds?.length
+      ? storedModelIds.slice(0, MAX_SELECTED_MODELS)
+      : initialSelectedModelIds(models);
+  });
+  const [prompt, setPrompt] = useState("");
+  const [threadId, setThreadId] = useState<string | null>(
+    initialThread?.id ?? null,
+  );
+  const [threadTitle, setThreadTitle] = useState<string | null>(
+    initialThread?.title ?? null,
+  );
+  const [isCreatingTurn, setIsCreatingTurn] = useState(false);
+  const [isLoadingThread, setIsLoadingThread] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const isCreatingTurnRef = useRef(false);
+  const runningResponseIdsRef = useRef(new Set<string>());
+  const savingVoteTurnIdsRef = useRef(new Set<string>());
+  const modelById = useMemo(
+    () => new Map(models.map((model) => [model.id, model])),
+    [models],
+  );
+  const isSubmitting =
+    isCreatingTurn ||
+    isLoadingThread ||
+    rounds.some((round) =>
+      round.responses.some(
+        (response) =>
+          response.status === "pending" || response.status === "streaming",
+      ),
+    );
+
+  const selectedModels = selectedModelIds
+    .map((modelId) => modelById.get(modelId))
+    .filter((model): model is ModelOption => Boolean(model));
 
   function removeModel(modelId: string) {
     setSelectedModelIds((currentIds) =>
@@ -252,28 +424,32 @@ export function ArenaPage() {
     );
   }
 
-  function addModel() {
-    const removedModel = MODEL_RESPONSES.find(
-      (model) => !selectedModelIds.includes(model.id),
-    );
+  function addModel(modelId: string) {
+    setSelectedModelIds((currentIds) => {
+      if (
+        currentIds.length >= MAX_SELECTED_MODELS ||
+        currentIds.includes(modelId) ||
+        !models.some((model) => model.id === modelId)
+      ) {
+        return currentIds;
+      }
 
-    if (removedModel) {
-      setSelectedModelIds((currentIds) => [...currentIds, removedModel.id]);
-    }
+      return [...currentIds, modelId];
+    });
   }
 
   function updateRoundResponse(
-    roundId: string,
-    modelId: string,
+    turnIdToUpdate: string,
+    responseId: string,
     update: (response: RoundResponse) => RoundResponse,
   ) {
     setRounds((currentRounds) =>
       currentRounds.map((round) =>
-        round.id === roundId
+        round.turnId === turnIdToUpdate
           ? {
               ...round,
               responses: round.responses.map((response) =>
-                response.modelId === modelId ? update(response) : response,
+                response.id === responseId ? update(response) : response,
               ),
             }
           : round,
@@ -281,133 +457,322 @@ export function ArenaPage() {
     );
   }
 
-  function selectWinner(roundId: string, modelId: string) {
-    setRounds((currentRounds) =>
-      currentRounds.map((round) =>
-        round.id === roundId ? { ...round, winnerId: modelId } : round,
-      ),
-    );
+  async function loadThread(nextThreadId: string) {
+    if (nextThreadId === threadId || isSubmitting) return;
+
+    setIsLoadingThread(true);
+    setSubmitError(null);
+    try {
+      const response = await fetch(
+        `/api/arena/threads?id=${encodeURIComponent(nextThreadId)}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(await responseError(response));
+
+      const storedThread = parseStoredThread(await response.json());
+      if (!storedThread) {
+        throw new Error("The server returned an invalid comparison thread.");
+      }
+
+      const nextRounds = comparisonRounds(storedThread);
+
+      const latestModelIds = nextRounds
+        .at(-1)
+        ?.responses.map((response) => response.modelId)
+        .filter((modelId) => modelById.has(modelId));
+      if (latestModelIds?.length) {
+        setSelectedModelIds(latestModelIds.slice(0, MAX_SELECTED_MODELS));
+      }
+      setRounds(nextRounds);
+      setThreadId(storedThread.id);
+      setThreadTitle(storedThread.title);
+      setPrompt("");
+      setIsSidebarOpen(false);
+      window.history.replaceState(
+        null,
+        "",
+        `/?thread=${encodeURIComponent(storedThread.id)}`,
+      );
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "The comparison could not be loaded.",
+      );
+    } finally {
+      setIsLoadingThread(false);
+    }
   }
 
-  function conversationForModel(modelId: string, nextPrompt: string) {
-    const messages: UIMessage[] = [];
-
-    for (const round of rounds) {
-      const response = round.responses.find(
-        (candidate) => candidate.modelId === modelId,
-      );
-
-      if (response?.status === "completed") {
-        messages.push(
-          {
-            id: `${round.id}-user`,
-            role: "user",
-            parts: [{ type: "text", text: round.prompt }],
-          },
-          {
-            id: `${round.id}-${modelId}`,
-            role: "assistant",
-            parts: [{ type: "text", text: response.content }],
-          },
-        );
-      }
+  async function selectWinner(turnIdToUpdate: string, modelId: string) {
+    const round = rounds.find(
+      (candidate) => candidate.turnId === turnIdToUpdate,
+    );
+    const response = round?.responses.find(
+      (candidate) => candidate.modelId === modelId,
+    );
+    if (
+      !round ||
+      !response ||
+      savingVoteTurnIdsRef.current.has(turnIdToUpdate) ||
+      round.responses.filter((candidate) => candidate.status === "completed")
+        .length < 2
+    ) {
+      return;
     }
 
-    messages.push({
-      id: crypto.randomUUID(),
-      role: "user",
-      parts: [{ type: "text", text: nextPrompt }],
-    });
+    savingVoteTurnIdsRef.current.add(turnIdToUpdate);
 
-    return messages;
+    setRounds((currentRounds) =>
+      currentRounds.map((round) =>
+        round.turnId === turnIdToUpdate
+          ? { ...round, voteError: null, voteStatus: "saving" }
+          : round,
+      ),
+    );
+    try {
+      const result = await fetch("/api/arena/votes", {
+        body: JSON.stringify({ responseId: response.id, turnId: round.turnId }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      });
+      if (!result.ok) throw new Error(await responseError(result));
+
+      setRounds((currentRounds) =>
+        currentRounds.map((candidate) =>
+          candidate.turnId === turnIdToUpdate
+            ? {
+                ...candidate,
+                voteError: null,
+                voteStatus: "idle",
+                winnerId: modelId,
+              }
+            : candidate,
+        ),
+      );
+    } catch (error) {
+      setRounds((currentRounds) =>
+        currentRounds.map((candidate) =>
+          candidate.turnId === turnIdToUpdate
+            ? {
+                ...candidate,
+                voteError:
+                  error instanceof Error
+                    ? error.message
+                    : "The vote could not be saved.",
+                voteStatus: "idle",
+              }
+            : candidate,
+        ),
+      );
+    } finally {
+      savingVoteTurnIdsRef.current.delete(turnIdToUpdate);
+    }
   }
 
   async function requestModelResponse(
-    roundId: string,
+    turnIdToUpdate: string,
+    responseId: string,
     modelId: string,
-    messages: UIMessage[],
   ) {
+    if (runningResponseIdsRef.current.has(responseId)) return;
+    runningResponseIdsRef.current.add(responseId);
+
+    updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
+      ...response,
+      content: "",
+      error: null,
+      metrics: null,
+      status: "pending",
+    }));
+
+    let streamedContent = "";
+    let streamError: unknown;
+
     try {
       const transport = new DefaultChatTransport({
         api: "/api/model-responses",
-        prepareSendMessagesRequest: ({ messages: requestMessages }) => ({
-          body: { messages: requestMessages, model: modelId },
+        headers: () => ({
+          "x-posthog-session-id": posthog.get_session_id(),
         }),
+        prepareSendMessagesRequest: () => ({ body: { responseId } }),
       });
       const stream = await transport.sendMessages({
         abortSignal: undefined,
-        chatId: `${roundId}-${modelId}`,
+        chatId: responseId,
         messageId: undefined,
-        messages,
+        messages: [],
         trigger: "submit-message",
       });
 
-      updateRoundResponse(roundId, modelId, (response) => ({
+      updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
         ...response,
         status: "streaming",
       }));
 
-      for await (const message of readUIMessageStream({
+      let completedMetrics: ResponseMetrics | null = null;
+      for await (const message of readUIMessageStream<ArenaUIMessage>({
         stream,
-        terminateOnError: true,
+        onError: (error) => {
+          streamError = error;
+        },
       })) {
-        const content = message.parts
+        streamedContent = message.parts
           .filter(isTextUIPart)
           .map((part) => part.text)
           .join("");
+        completedMetrics = message.metadata?.metrics ?? completedMetrics;
 
-        updateRoundResponse(roundId, modelId, (response) => ({
+        updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
           ...response,
-          content,
+          content: streamedContent,
+          metrics: completedMetrics,
           status: "streaming",
         }));
       }
 
-      updateRoundResponse(roundId, modelId, (response) => ({
+      let confirmedResponse = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const persistedResult = await fetch(
+          `/api/model-responses?id=${encodeURIComponent(responseId)}`,
+          { cache: "no-store" },
+        );
+        if (!persistedResult.ok) {
+          throw new Error(await responseError(persistedResult));
+        }
+        confirmedResponse = parseResponseResult(await persistedResult.json());
+        if (!confirmedResponse || confirmedResponse.status !== "in_progress") {
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      }
+      if (!confirmedResponse) {
+        throw new Error("The server returned an invalid response status.");
+      }
+      if (confirmedResponse.status === "failed") {
+        const failedContent = confirmedResponse.content || streamedContent;
+        updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
+          ...response,
+          content: failedContent,
+          error: storedModelFailure(
+            confirmedResponse.errorCode,
+            failedContent.length > 0,
+          ),
+          status: "failed",
+        }));
+        return;
+      }
+      if (confirmedResponse.status === "in_progress") {
+        throw (
+          streamError ??
+          new Error("The response completion could not be confirmed.")
+        );
+      }
+
+      updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
         ...response,
+        content: confirmedResponse.content,
+        metrics: confirmedResponse.metrics,
         status: "completed",
       }));
     } catch (error) {
       console.error("Unable to generate model response", { error, modelId });
-      updateRoundResponse(roundId, modelId, (response) => ({
+      updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
         ...response,
-        error: "That model could not finish its answer. Please try again.",
+        error: modelFailure(error, response.content.length > 0),
         status: "failed",
       }));
+    } finally {
+      runningResponseIdsRef.current.delete(responseId);
     }
   }
 
-  function submitPrompt() {
+  async function submitPrompt() {
     const nextPrompt = prompt.trim();
 
-    if (!nextPrompt || isSubmitting) {
+    if (
+      !nextPrompt ||
+      selectedModels.length === 0 ||
+      isSubmitting ||
+      isCreatingTurnRef.current
+    ) {
       return;
     }
 
-    const roundId = crypto.randomUUID();
-    const modelRequests = selectedModelIds.map((modelId) => ({
-      messages: conversationForModel(modelId, nextPrompt),
-      modelId,
-    }));
-    const nextRound: ComparisonRound = {
-      id: roundId,
-      prompt: nextPrompt,
-      responses: selectedModelIds.map((modelId) => ({
-        content: "",
-        error: null,
-        modelId,
-        status: "pending",
-      })),
-      winnerId: null,
-    };
+    isCreatingTurnRef.current = true;
+    setIsCreatingTurn(true);
+    setSubmitError(null);
+    try {
+      const result = await fetch("/api/arena/turns", {
+        body: JSON.stringify({
+          models: selectedModels.map(({ id, name }) => ({ id, name })),
+          prompt: nextPrompt,
+          threadId,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      if (!result.ok) throw new Error(await responseError(result));
 
-    setRounds((currentRounds) => [...currentRounds, nextRound]);
-    setPrompt("");
-    void Promise.allSettled(
-      modelRequests.map(({ messages, modelId }) =>
-        requestModelResponse(roundId, modelId, messages),
-      ),
-    );
+      const createdTurn = parseCreatedTurn(await result.json());
+      if (!createdTurn) {
+        throw new Error("The server returned an invalid comparison.");
+      }
+      const nextRound: ComparisonRound = {
+        prompt: nextPrompt,
+        responses: createdTurn.responses.map((response) => ({
+          content: "",
+          error: null,
+          id: response.id,
+          metrics: null,
+          modelId: response.modelId,
+          modelName: response.modelName,
+          status: "pending",
+        })),
+        turnId: createdTurn.turnId,
+        voteError: null,
+        voteStatus: "idle",
+        winnerId: null,
+      };
+
+      setThreadId(createdTurn.threadId);
+      setThreadTitle(createdTurn.threadTitle);
+      setThreads((currentThreads) => [
+        {
+          id: createdTurn.threadId,
+          title: createdTurn.threadTitle,
+          updatedAt: createdTurn.threadUpdatedAt,
+        },
+        ...currentThreads.filter(
+          (candidate) => candidate.id !== createdTurn.threadId,
+        ),
+      ]);
+      setRounds((currentRounds) => [...currentRounds, nextRound]);
+      setPrompt("");
+      window.history.replaceState(
+        null,
+        "",
+        `/?thread=${encodeURIComponent(createdTurn.threadId)}`,
+      );
+      void Promise.allSettled(
+        createdTurn.responses.map((response) =>
+          requestModelResponse(
+            createdTurn.turnId,
+            response.id,
+            response.modelId,
+          ),
+        ),
+      );
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "The comparison could not be started.",
+      );
+    } finally {
+      isCreatingTurnRef.current = false;
+      setIsCreatingTurn(false);
+    }
   }
 
   return (
@@ -453,25 +818,45 @@ export function ArenaPage() {
         <div className="thread-section">
           <p className="eyebrow">Recent threads</p>
           <div className="thread-list">
-            {RECENT_THREADS.map((thread, index) => (
+            {threads.map((thread) => (
               <button
                 className={
-                  index === 0 ? "thread-link is-current" : "thread-link"
+                  thread.id === threadId
+                    ? "thread-link is-current"
+                    : "thread-link"
                 }
                 type="button"
-                key={thread}
+                disabled={isSubmitting}
+                key={thread.id}
+                onClick={() => void loadThread(thread.id)}
               >
-                <span>{thread}</span>
-                {index === 0 && (
+                <span>{thread.title}</span>
+                {thread.id === threadId && (
                   <span className="thread-dot" aria-hidden="true" />
                 )}
               </button>
             ))}
+            {threads.length === 0 ? (
+              <p className="thread-empty">No saved comparisons yet.</p>
+            ) : null}
           </div>
         </div>
 
         <div className="sidebar-footer">
-          <button className="new-comparison" type="button">
+          <button
+            className="new-comparison"
+            type="button"
+            disabled={isSubmitting}
+            onClick={() => {
+              setRounds([]);
+              setThreadId(null);
+              setThreadTitle(null);
+              setPrompt("");
+              setSubmitError(null);
+              setIsSidebarOpen(false);
+              window.history.replaceState(null, "", "/");
+            }}
+          >
             <Plus size={17} />
             New comparison
           </button>
@@ -491,8 +876,10 @@ export function ArenaPage() {
               <Menu size={20} />
             </button>
             <div>
-              <span className="breadcrumb">Arena / Thread 1</span>
-              <h1>Explain quantum entanglement simply</h1>
+              <span className="breadcrumb">
+                {threadId ? "Arena / Current thread" : "Arena / New comparison"}
+              </span>
+              <h1>{threadTitle ?? "Compare free AI models"}</h1>
             </div>
           </div>
 
@@ -514,7 +901,7 @@ export function ArenaPage() {
             ).length;
 
             return (
-              <section className="comparison-round" key={round.id}>
+              <section className="comparison-round" key={round.turnId}>
                 <div className="user-message-wrap">
                   <div className="user-message">{round.prompt}</div>
                   <span className="message-meta">You · Just now</span>
@@ -533,22 +920,40 @@ export function ArenaPage() {
 
                 <div className="response-grid">
                   {round.responses.map((response) => {
-                    const model = MODEL_RESPONSES.find(
-                      (candidate) => candidate.id === response.modelId,
-                    );
+                    const model = modelById.get(response.modelId) ?? {
+                      author: response.modelId.split("/")[0] ?? "openrouter",
+                      contextLength: 0,
+                      id: response.modelId,
+                      name: response.modelName,
+                    };
 
-                    return model ? (
+                    return (
                       <ModelCard
-                        key={model.id}
+                        key={response.id}
+                        canVote={completedResponses >= 2}
+                        isVoteSaving={round.voteStatus === "saving"}
                         model={model}
                         response={response}
-                        showMetrics={round.id === INITIAL_ROUND.id}
                         winnerId={round.winnerId}
-                        onVote={(modelId) => selectWinner(round.id, modelId)}
+                        onRetry={() =>
+                          requestModelResponse(
+                            round.turnId,
+                            response.id,
+                            model.id,
+                          )
+                        }
+                        onVote={(modelId) =>
+                          void selectWinner(round.turnId, modelId)
+                        }
                       />
-                    ) : null;
+                    );
                   })}
                 </div>
+                {round.voteError ? (
+                  <p className="arena-error" role="alert">
+                    {round.voteError}
+                  </p>
+                ) : null}
               </section>
             );
           })}
@@ -560,25 +965,33 @@ export function ArenaPage() {
               {selectedModels.map((model) => (
                 <span className="model-chip" key={model.id}>
                   <Bot size={13} aria-hidden="true" />
-                  {model.shortName}
+                  <span>{model.name}</span>
                   <button
                     type="button"
                     aria-label={`Remove ${model.name}`}
+                    disabled={selectedModelIds.length === 1}
+                    title={
+                      selectedModelIds.length === 1
+                        ? "At least one model is required"
+                        : undefined
+                    }
                     onClick={() => removeModel(model.id)}
                   >
                     <X size={13} />
                   </button>
                 </span>
               ))}
-              <button
-                className="add-model"
-                type="button"
-                disabled={selectedModelIds.length === MODEL_RESPONSES.length}
-                onClick={addModel}
-              >
-                <Plus size={14} />
-                Add model
-              </button>
+              <ModelPicker
+                models={models}
+                catalogError={catalogError}
+                selectedModelIds={selectedModelIds}
+                onSelect={addModel}
+              />
+              {catalogError ? (
+                <span className="model-catalog-warning" role="status">
+                  Live catalog unavailable
+                </span>
+              ) : null}
             </div>
 
             <div className="prompt-row">
@@ -589,31 +1002,43 @@ export function ArenaPage() {
                 id="prompt-input"
                 value={prompt}
                 rows={1}
-                placeholder="Ask a follow-up…"
+                placeholder={
+                  threadId ? "Ask a follow-up…" : "Ask all selected models…"
+                }
                 onChange={(event) => setPrompt(event.target.value)}
                 onKeyDown={(event) => {
                   if (
                     event.key === "Enter" &&
-                    (event.metaKey || event.ctrlKey)
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
                   ) {
                     event.preventDefault();
-                    submitPrompt();
+                    void submitPrompt();
                   }
                 }}
               />
               <div className="send-group">
-                <span>⌘ Enter</span>
+                <span>Enter · Shift+Enter for newline</span>
                 <button
                   className="send-button"
                   type="button"
                   aria-label="Send prompt"
-                  disabled={!prompt.trim() || isSubmitting}
-                  onClick={submitPrompt}
+                  disabled={
+                    !prompt.trim() ||
+                    selectedModels.length === 0 ||
+                    isSubmitting
+                  }
+                  onClick={() => void submitPrompt()}
                 >
                   <ArrowUp size={20} />
                 </button>
               </div>
             </div>
+            {submitError ? (
+              <p className="arena-error" role="alert">
+                {submitError}
+              </p>
+            ) : null}
           </div>
         </div>
       </section>

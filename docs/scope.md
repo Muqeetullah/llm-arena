@@ -22,8 +22,8 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 2   | Coding standards & tooling                  | Foundation | complete    |
 | 3   | Data model                                  | Foundation | complete    |
 | 4   | Design & look                               | Foundation | complete    |
-| 5   | Model picker                                | Slice 1    | not started |
-| 6   | Send a prompt, parallel streams, and voting | Slice 1    | not started |
+| 5   | Model picker                                | Slice 1    | complete    |
+| 6   | Send a prompt, parallel streams, and voting | Slice 1    | complete    |
 | 7   | App shell & thread history                  | Slice 2    | not started |
 | 8   | Public thread visibility & sharing          | Slice 3    | not started |
 | 9   | Leaderboard: global & personal              | Slice 4    | not started |
@@ -127,8 +127,18 @@ Motion is functional and short: 120–180ms state transitions, a subtle streamin
 
 An "Add model" popover pulling OpenRouter's live free-tier list, sorted by context window, capped at three models, defaulting to all three selected, with removable chips next to the prompt box. Also render that same catalog as a simple `/models` page, name, context window, and pricing for each one, so anyone can browse the full list without opening the picker.
 
-- [ ] Decide the approach
-- [ ] Build it
+The Arena and `/models` share one server-owned catalog contract. OpenRouter results are limited to zero-price model IDs that accept text and return text only, then cached for five minutes and sorted by context window. The authenticated Arena page sends only the compact picker metadata into its client boundary. It prefers the three established Arena models when they are still live, fills any missing slots from the ordered catalog, and retains those three as a safe fallback if the catalog cannot be reached. Selection remains local to the current Arena session, always contains at least one model, and never exceeds three.
+
+The picker uses shadcn's Radix popover and command primitives for keyboard search and selection. Model identity is separate from the original demo-answer fixtures, so any live model selected from the catalog can render in a new response card without requiring hard-coded presentation data.
+
+- [x] Decide the approach
+- [x] Build it
+  - [x] Share catalog types, display helpers, and free-model eligibility with the response endpoint
+  - [x] Pass a compact live catalog from the authenticated Server Component into the Arena
+  - [x] Add deterministic three-model defaults and a resilient catalog-error fallback
+  - [x] Build the searchable, keyboard-accessible popover with one-to-three selection rules
+  - [x] Reuse the same filtered catalog on `/models`
+  - [x] Verify formatting, lint, typecheck, webpack production build, protected-route rendering, and the live catalog filter
 
 ### 6. Send a prompt, parallel streams, and voting
 
@@ -138,8 +148,22 @@ Arcjet sits in front of this endpoint before any model is ever called: rate limi
 
 Every prompt sent, every answer finishing, and every vote cast should be tracked as a real PostHog event, so there's an honest funnel from prompt to answer to vote. A model failing should also be logged properly on the server, not just shown to the user and forgotten. Separately from that funnel, every actual model call should also be wrapped so PostHog captures its own real tokens, cost, and latency per call, that's PostHog's own LLM analytics, not the same thing as the funnel events or the numbers already shown on the response card.
 
-- [ ] Decide the approach
-- [ ] Build it
+Create the turn and its one-to-three response records in a serializable database transaction before starting any model call. The browser then fans those response IDs out into independent HTTP streams, preserving the per-model failure and retry boundary decided in Feature 1. A response ID is an authorization capability only for its owning signed-in user and is atomically claimed before generation, so duplicate retries cannot start duplicate provider calls. The server, not the browser, reconstructs each model's conversation from that model's completed responses in earlier turns; client-supplied history is never trusted.
+
+Each stream persists its final text, provider token counts, duration, time to first token, and terminal state from AI SDK lifecycle callbacks. The same real measurements return in typed UI-message metadata for the response card, then the client confirms the terminal state against an owner-authorized database read after the stream closes. A response is only presented as complete when that persistence succeeds. Reasoning-only generations with no visible text are failed rather than made voteable. Failed and aborted calls retain a safe retry boundary; attempt timestamps let abandoned streams be reclaimed without allowing an older request to overwrite a newer retry, while provider details stay in server logs. Arcjet evaluates every individual model call against the same user-keyed token bucket, so selecting three models consumes three units without coupling their streams.
+
+Voting uses its own authenticated route. The route checks thread ownership and upserts the turn's single vote, while the existing PostgreSQL trigger remains the final authority that the selected response belongs to the turn, is complete, and has at least one other completed response. Prompt, completed-answer, and vote funnel events are captured on the server; each actual LLM call remains independently wrapped by PostHog AI tracing and linked back to the browser session.
+
+- [x] Decide the approach
+- [x] Build it
+  - [x] Create persisted turns and per-model response identities before fan-out
+  - [x] Stream up to three model calls concurrently with independent failure and retry boundaries
+  - [x] Reconstruct each model's follow-up context from server-owned completed history
+  - [x] Persist response content, status, real TTFT, output speed inputs, and token usage
+  - [x] Enforce owner-only, one-per-turn voting after at least two completed answers
+  - [x] Capture prompt, completed-answer, vote, and traced LLM-call telemetry, with structured server failure logs
+  - [x] Guard duplicate submissions, retries, stale completions, and concurrent vote races
+  - [x] Verify formatting, lint, typecheck, and the webpack production build
 
 ## Slice 2: App shell & thread history
 

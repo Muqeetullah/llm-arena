@@ -1,6 +1,8 @@
 import { isTextUIPart, safeValidateUIMessages, type UIMessage } from "ai";
 import { z } from "zod";
 
+import { isFreeModelId } from "@/features/model-catalog/types";
+
 const MAX_MESSAGE_COUNT = 50;
 const MAX_PROMPT_CHARACTERS = 32_000;
 
@@ -16,9 +18,6 @@ export type ModelRequestInput = Readonly<{
   model: string;
   promptText: string;
 }>;
-
-const isFreeModel = (model: string): boolean =>
-  model === "openrouter/free" || model.endsWith(":free");
 
 const textFromMessage = (message: UIMessage): string =>
   message.parts
@@ -40,7 +39,7 @@ export async function parseModelRequest(
 ): Promise<ModelRequestInput | null> {
   const body = requestBodySchema.safeParse(value);
 
-  if (!body.success || !isFreeModel(body.data.model)) {
+  if (!body.success || !isFreeModelId(body.data.model)) {
     return null;
   }
 

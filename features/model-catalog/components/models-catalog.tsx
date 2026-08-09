@@ -15,7 +15,12 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { AccountMenu } from "@/features/auth/components/account-menu";
-import type { AvailableModel } from "@/features/model-catalog/server/get-available-models";
+import {
+  formatContextWindow,
+  modelInitials,
+  providerName,
+  type AvailableModel,
+} from "@/features/model-catalog/types";
 
 type ModelsCatalogProps = {
   readonly models: readonly AvailableModel[];
@@ -29,35 +34,6 @@ const capabilityLabels: Record<string, string> = {
   structured_outputs: "Structured output",
   response_format: "JSON output",
 };
-
-function formatContextWindow(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(tokens / 1_000_000)}M`;
-  }
-
-  if (tokens >= 1_000) {
-    return `${new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(tokens / 1_000)}K`;
-  }
-
-  return new Intl.NumberFormat("en").format(tokens);
-}
-
-function providerName(author: string): string {
-  return author
-    .split(/[-_]/)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-function modelInitials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((word) => word[0])
-    .join("")
-    .toUpperCase();
-}
 
 export function ModelsCatalog({ models, error }: ModelsCatalogProps) {
   const [query, setQuery] = useState("");
