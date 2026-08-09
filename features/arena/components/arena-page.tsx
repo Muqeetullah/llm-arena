@@ -479,6 +479,35 @@ function NewComparisonEmptyState({ isSignedIn }: { isSignedIn: boolean }) {
   );
 }
 
+function UnavailableThreadState({ error }: { error: string }) {
+  return (
+    <section
+      className="new-thread-empty"
+      aria-labelledby="unavailable-thread-title"
+      role="alert"
+    >
+      <div className="new-thread-heading">
+        <span className="new-thread-icon" aria-hidden="true">
+          <CircleAlert size={21} />
+        </span>
+        <p className="eyebrow">Unavailable comparison</p>
+        <h2 id="unavailable-thread-title">This thread could not be opened</h2>
+        <p>{error}</p>
+      </div>
+
+      <div className="new-thread-signin">
+        <div>
+          <strong>The link may no longer be available</strong>
+          <span>
+            The comparison may have been deleted, or the link may be invalid.
+          </span>
+        </div>
+        <Link href="/">Back to the arena</Link>
+      </div>
+    </section>
+  );
+}
+
 function PublicThreadNotice({
   isSignedIn,
   threadId,
@@ -551,6 +580,7 @@ export function ArenaPage({
   const [isCreatingTurn, setIsCreatingTurn] = useState(false);
   const [isLoadingThread, setIsLoadingThread] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [threadLoadError, setThreadLoadError] = useState<string | null>(null);
   const [isAuthenticationRequired, setIsAuthenticationRequired] =
     useState(false);
   const [shareStatus, setShareStatus] = useState<"idle" | "copied" | "error">(
@@ -630,6 +660,7 @@ export function ArenaPage({
     setCanInteract(isSignedIn);
     setPrompt("");
     setSubmitError(null);
+    setThreadLoadError(null);
     setIsAuthenticationRequired(false);
     setIsSidebarOpen(false);
     updateBrowserHistory(null, historyUpdate);
@@ -643,6 +674,7 @@ export function ArenaPage({
 
     setIsLoadingThread(true);
     setSubmitError(null);
+    setThreadLoadError(null);
     setIsAuthenticationRequired(false);
     try {
       const response = await fetch(
@@ -673,7 +705,13 @@ export function ArenaPage({
       setIsSidebarOpen(false);
       updateBrowserHistory(storedThread.id, historyUpdate);
     } catch (error) {
-      setSubmitError(
+      setRounds([]);
+      setThreadId(null);
+      setThreadTitle(null);
+      setCanInteract(isSignedIn);
+      setPrompt("");
+      setIsSidebarOpen(false);
+      setThreadLoadError(
         error instanceof Error
           ? error.message
           : "The comparison could not be loaded.",
@@ -1119,13 +1157,19 @@ export function ArenaPage({
             </button>
             <div>
               <span className="breadcrumb">
-                {threadId
-                  ? canInteract
-                    ? "Arena / Current thread"
-                    : "Arena / Public view"
-                  : "Arena / New chat"}
+                {threadLoadError
+                  ? "Arena / Unavailable comparison"
+                  : threadId
+                    ? canInteract
+                      ? "Arena / Current thread"
+                      : "Arena / Public view"
+                    : "Arena / New chat"}
               </span>
-              <h1>{threadTitle ?? "New comparison"}</h1>
+              <h1>
+                {threadLoadError
+                  ? "Comparison unavailable"
+                  : (threadTitle ?? "New comparison")}
+              </h1>
             </div>
           </div>
 
@@ -1165,7 +1209,9 @@ export function ArenaPage({
         <main
           className={`conversation${rounds.length === 0 ? " is-empty" : ""}`}
         >
-          {rounds.length === 0 ? (
+          {threadLoadError ? (
+            <UnavailableThreadState error={threadLoadError} />
+          ) : rounds.length === 0 ? (
             <NewComparisonEmptyState isSignedIn={isSignedIn} />
           ) : null}
 
@@ -1240,7 +1286,7 @@ export function ArenaPage({
           })}
         </main>
 
-        {canInteract ? (
+        {canInteract && !threadLoadError ? (
           <div className="composer-dock">
             <div
               className={`composer${isAuthenticationRequired ? " is-auth-required" : ""}`}
