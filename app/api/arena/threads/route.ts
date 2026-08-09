@@ -29,15 +29,6 @@ export async function GET(request: Request) {
     return jsonError("The safety check is temporarily unavailable.", 503);
   }
 
-  if (decision.isErrored()) {
-    console.error("Arcjet public thread protection failed open", {
-      event: "arcjet_public_thread_protection_error",
-      reason: decision.reason.message,
-      requestId: decision.id,
-      surface: "api",
-    });
-  }
-
   if (decision.isDenied()) {
     console.warn("Arcjet blocked a public thread API read", {
       event: "arcjet_public_thread_read_denied",
@@ -48,6 +39,16 @@ export async function GET(request: Request) {
     return decision.reason.isRateLimit()
       ? jsonError("Too many comparison requests. Please try again soon.", 429)
       : jsonError("That comparison request was blocked.", 403);
+  }
+
+  if (decision.isErrored()) {
+    console.error("Arcjet public thread protection failed", {
+      event: "arcjet_public_thread_protection_error",
+      reason: decision.reason.message,
+      requestId: decision.id,
+      surface: "api",
+    });
+    return jsonError("The safety check is temporarily unavailable.", 503);
   }
 
   const threadId = parseThreadId(rawThreadId);

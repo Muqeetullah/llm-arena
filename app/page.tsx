@@ -27,18 +27,19 @@ export default async function Home({ searchParams }: HomeProps) {
       notFound();
     }
 
-    if (decision.isErrored()) {
-      console.error("Arcjet public thread protection failed open", {
-        event: "arcjet_public_thread_protection_error",
-        reason: decision.reason.message,
-        requestId: decision.id,
-        surface: "page",
-      });
-    }
     if (decision.isDenied()) {
       console.warn("Arcjet blocked a public thread page read", {
         event: "arcjet_public_thread_read_denied",
         reason: decision.reason.type,
+        requestId: decision.id,
+        surface: "page",
+      });
+      notFound();
+    }
+    if (decision.isErrored()) {
+      console.error("Arcjet public thread protection failed", {
+        event: "arcjet_public_thread_protection_error",
+        reason: decision.reason.message,
         requestId: decision.id,
         surface: "page",
       });
