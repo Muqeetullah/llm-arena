@@ -105,6 +105,7 @@ const storedResponseSchema = z.object({
 });
 
 const storedThreadSchema = z.object({
+  canInteract: z.boolean(),
   id: z.string().min(1),
   rounds: z.array(
     z.object({

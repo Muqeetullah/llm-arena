@@ -256,10 +256,11 @@ const storedErrorCode = (
       ? "PROVIDER_ERROR"
       : null;
 
-export async function getThread(userId: string, threadId: string) {
+export async function getThread(viewerId: string | null, threadId: string) {
   const thread = await database.thread.findFirst({
     select: {
       id: true,
+      ownerId: true,
       title: true,
       updatedAt: true,
       turns: {
@@ -288,12 +289,13 @@ export async function getThread(userId: string, threadId: string) {
         },
       },
     },
-    where: { id: threadId, ownerId: userId },
+    where: { id: threadId },
   });
 
   if (!thread) return null;
 
   return {
+    canInteract: thread.ownerId === viewerId,
     id: thread.id,
     rounds: thread.turns.map((turn) => ({
       createdAt: turn.createdAt.toISOString(),

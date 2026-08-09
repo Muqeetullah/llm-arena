@@ -1,4 +1,5 @@
 import { auth } from "@clerk/nextjs/server";
+import { notFound } from "next/navigation";
 
 import { ArenaPage } from "@/features/arena/components/arena-page";
 import { getRecentThreads, getThread } from "@/features/arena/server/data";
@@ -10,12 +11,19 @@ type HomeProps = {
 };
 
 export default async function Home({ searchParams }: HomeProps) {
-  const { userId } = await auth.protect();
-  const requestedThreadId = parseThreadId((await searchParams).thread);
-  const [catalog, recentThreads, initialThread] = await Promise.all([
+  const { userId } = await auth();
+  const rawThreadId = (await searchParams).thread;
+  const requestedThreadId = parseThreadId(rawThreadId);
+  if (rawThreadId !== undefined && !requestedThreadId) notFound();
+
+  const initialThread = requestedThreadId
+    ? await getThread(userId, requestedThreadId)
+    : null;
+  if (requestedThreadId && !initialThread) notFound();
+
+  const [catalog, recentThreads] = await Promise.all([
     getAvailableModels(),
-    getRecentThreads(userId),
-    requestedThreadId ? getThread(userId, requestedThreadId) : null,
+    userId ? getRecentThreads(userId) : [],
   ]);
   const modelOptions = catalog.models.map(
     ({ id, name, author, contextLength }) => ({
@@ -32,6 +40,7 @@ export default async function Home({ searchParams }: HomeProps) {
       catalogError={catalog.error}
       initialThread={initialThread}
       initialThreads={recentThreads}
+      isSignedIn={Boolean(userId)}
     />
   );
 }

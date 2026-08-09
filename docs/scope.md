@@ -25,7 +25,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 5   | Model picker                                | Slice 1    | complete    |
 | 6   | Send a prompt, parallel streams, and voting | Slice 1    | complete    |
 | 7   | App shell & thread history                  | Slice 2    | not started |
-| 8   | Public thread visibility & sharing          | Slice 3    | not started |
+| 8   | Public thread visibility & sharing          | Slice 3    | complete    |
 | 9   | Leaderboard: global & personal              | Slice 4    | not started |
 
 ## Foundation
@@ -171,8 +171,8 @@ Voting uses its own authenticated route. The route checks thread ownership and u
 
 The frame everything else sits inside: a top bar and sidebar that stay in place while the page scrolls, plus the thread's name. Win records belong on the leaderboard, where the full model name and "won X of Y" context make them understandable; do not compress them into initials and fractions in the Arena header. The sidebar lists a signed-in user's own past threads so the tool actually feels usable across visits, not just in one sitting.
 
-- [ ] Decide the approach
-- [ ] Build it
+- [x] Decide the approach
+- [x] Build it
 
 ## Slice 3: Public visibility & sharing
 
@@ -180,8 +180,14 @@ The frame everything else sits inside: a top bar and sidebar that stay in place 
 
 Anyone should be able to open a thread's link and see it, without an account, that's what actually makes it shareable. Only sending a prompt and voting need sign-in. A made-up or deleted thread just shows a plain not-found page either way. The thread's real owner sees everything everyone else sees, plus the ability to actually use it.
 
-- [ ] Decide the approach
-- [ ] Build it
+Keep the existing `?thread=` permalink as the public sharing contract. Thread reads look up the opaque thread ID without requiring Clerk, but return only the comparison content and a `canInteract` capability computed for the current viewer; the owner's identity is never exposed. Every write path remains authenticated and owner-scoped at the database query, so a public link grants visibility but no mutation authority. The Arena renders the same saved rounds for everyone, hides voting, retry, and composer controls from non-owners, and offers owners their normal interactive workspace. Invalid IDs and absent records both terminate through Next.js's not-found boundary.
+
+- [x] Decide the approach
+- [x] Build it
+  - [x] Make thread reads public without exposing owner identity
+  - [x] Add read-only Arena states and a working share-link action
+  - [x] Render invalid and deleted thread links through a plain not-found page
+  - [x] Verify anonymous reads, owner-only writes, quality gates, and production build
 
 ## Slice 4: Leaderboard
 

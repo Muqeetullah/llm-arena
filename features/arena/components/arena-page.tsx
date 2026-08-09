@@ -1,5 +1,6 @@
 "use client";
 
+import { SignInButton } from "@clerk/nextjs";
 import {
   ArrowUp,
   Award,
@@ -8,7 +9,12 @@ import {
   ChevronDown,
   CircleAlert,
   Database,
+  Eye,
+  FileText,
   LayoutGrid,
+  Lightbulb,
+  ListChecks,
+  LogIn,
   Menu,
   Plus,
   RefreshCw,
@@ -16,11 +22,12 @@ import {
   Sparkles,
   Swords,
   Trophy,
+  Waypoints,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import posthog from "posthog-js";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DefaultChatTransport, isTextUIPart, readUIMessageStream } from "ai";
 
 import { AccountMenu } from "@/features/auth/components/account-menu";
@@ -59,6 +66,7 @@ type RoundResponse = {
 };
 
 type ComparisonRound = {
+  readonly createdAt: string;
   readonly prompt: string;
   readonly responses: readonly RoundResponse[];
   readonly turnId: string;
@@ -68,8 +76,49 @@ type ComparisonRound = {
 };
 
 const MAX_SELECTED_MODELS = 3;
+const MAX_RECENT_THREADS = 20;
 const PERSISTENCE_POLL_INTERVAL_MS = 150;
 const PERSISTENCE_CONFIRMATION_TIMEOUT_MS = 5_000;
+
+type HistoryUpdate = "none" | "push" | "replace";
+
+const threadUrl = (threadId: string | null): string =>
+  threadId ? `/?thread=${encodeURIComponent(threadId)}` : "/";
+
+const signInUrl = (threadId: string | null): string =>
+  `/sign-in?redirect_url=${encodeURIComponent(threadUrl(threadId))}`;
+
+function updateBrowserHistory(
+  threadId: string | null,
+  historyUpdate: HistoryUpdate,
+) {
+  if (historyUpdate === "none") return;
+
+  window.history[historyUpdate === "push" ? "pushState" : "replaceState"](
+    null,
+    "",
+    threadUrl(threadId),
+  );
+}
+
+function relativeTime(isoDate: string): string {
+  const elapsedMs = Date.now() - new Date(isoDate).getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 60_000) return "Just now";
+
+  const elapsedMinutes = Math.floor(elapsedMs / 60_000);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return elapsedDays < 7
+    ? `${elapsedDays}d ago`
+    : new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        month: "short",
+      }).format(new Date(isoDate));
+}
 
 function modelFailure(
   error: unknown,
@@ -186,6 +235,7 @@ function initialSelectedModelIds(models: readonly ModelOption[]): string[] {
 
 function comparisonRounds(storedThread: StoredThread): ComparisonRound[] {
   return storedThread.rounds.map((round) => ({
+    createdAt: round.createdAt,
     prompt: round.prompt,
     responses: round.responses.map((storedResponse) => {
       const wasInterrupted =
@@ -221,6 +271,7 @@ function comparisonRounds(storedThread: StoredThread): ComparisonRound[] {
 }
 
 function ModelCard({
+  canInteract,
   canVote,
   model,
   response,
@@ -229,6 +280,7 @@ function ModelCard({
   onRetry,
   onVote,
 }: {
+  canInteract: boolean;
   canVote: boolean;
   model: ModelOption;
   response: RoundResponse;
@@ -274,23 +326,25 @@ function ModelCard({
             )}
             <span>{statusLabel}</span>
           </div>
-          <button
-            className={isWinner ? "vote-button winner-button" : "vote-button"}
-            type="button"
-            disabled={!isComplete || !canVote || isVoteSaving}
-            onClick={() => onVote(model.id)}
-          >
-            {isWinner ? (
-              <>
-                <Check size={13} aria-hidden="true" /> Selected
-              </>
-            ) : (
-              <>
-                <Sparkles size={13} aria-hidden="true" />
-                {hasWinner ? "Pick instead" : "Pick this one"}
-              </>
-            )}
-          </button>
+          {canInteract ? (
+            <button
+              className={isWinner ? "vote-button winner-button" : "vote-button"}
+              type="button"
+              disabled={!isComplete || !canVote || isVoteSaving}
+              onClick={() => onVote(model.id)}
+            >
+              {isWinner ? (
+                <>
+                  <Check size={13} aria-hidden="true" /> Selected
+                </>
+              ) : (
+                <>
+                  <Sparkles size={13} aria-hidden="true" />
+                  {hasWinner ? "Pick instead" : "Pick this one"}
+                </>
+              )}
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -304,14 +358,16 @@ function ModelCard({
               <h4>{response.error.title}</h4>
               <p>{response.error.description}</p>
             </div>
-            <button
-              className="retry-response-button"
-              type="button"
-              onClick={onRetry}
-            >
-              <RefreshCw size={13} aria-hidden="true" />
-              Retry response
-            </button>
+            {canInteract ? (
+              <button
+                className="retry-response-button"
+                type="button"
+                onClick={onRetry}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                Retry response
+              </button>
+            ) : null}
           </div>
         ) : response.content ? (
           <ModelResponse
@@ -359,10 +415,104 @@ function ModelCard({
   );
 }
 
+function NewComparisonEmptyState({ isSignedIn }: { isSignedIn: boolean }) {
+  const guidance = [
+    {
+      description: "Add the context and constraints every model should use.",
+      icon: Lightbulb,
+      title: "Be specific",
+    },
+    {
+      description: "Ask for a format so the answers are easy to compare.",
+      icon: ListChecks,
+      title: "Shape the answer",
+    },
+    {
+      description: "Try explanations, trade-offs, or reasoning-heavy tasks.",
+      icon: Waypoints,
+      title: "Create contrast",
+    },
+  ] as const;
+
+  return (
+    <section className="new-thread-empty" aria-labelledby="new-thread-title">
+      <div className="new-thread-heading">
+        <span className="new-thread-icon" aria-hidden="true">
+          <Sparkles size={21} />
+        </span>
+        <p className="eyebrow">New chat</p>
+        <h2 id="new-thread-title">Start a fresh comparison</h2>
+        <p>
+          One thoughtful prompt can reveal how differently each model reasons,
+          explains, and communicates.
+        </p>
+      </div>
+
+      <div className="new-thread-guidance" aria-label="Prompt writing tips">
+        {guidance.map(({ description, icon: Icon, title }) => (
+          <div className="new-thread-tip" key={title}>
+            <span aria-hidden="true">
+              <Icon size={17} />
+            </span>
+            <div>
+              <strong>{title}</strong>
+              <p>{description}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {isSignedIn ? (
+        <p className="new-thread-footnote">
+          Choose up to three models below, then send your first prompt.
+        </p>
+      ) : (
+        <div className="new-thread-signin">
+          <div>
+            <strong>Ready to compare?</strong>
+            <span>Sign in to send prompts, vote, and keep your history.</span>
+          </div>
+          <Link href={signInUrl(null)}>Sign in to start</Link>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PublicThreadNotice({
+  isSignedIn,
+  threadId,
+}: {
+  isSignedIn: boolean;
+  threadId: string;
+}) {
+  return (
+    <section className="public-thread-notice" aria-label="Public thread access">
+      <span className="public-thread-icon" aria-hidden="true">
+        <Eye size={20} />
+      </span>
+      <div className="public-thread-copy">
+        <div>
+          <span className="public-thread-badge">Public view</span>
+          <strong>Reading a shared comparison</strong>
+        </div>
+        <p>
+          Anyone with this link can read the prompt, responses, result, and
+          metrics. Only the thread owner can continue it or vote.
+        </p>
+      </div>
+      <Link href={isSignedIn ? "/" : signInUrl(threadId)}>
+        {isSignedIn ? "Start your own" : "Sign in to interact"}
+      </Link>
+    </section>
+  );
+}
+
 type ArenaPageProps = {
   readonly catalogError: string | null;
   readonly initialThread: StoredThread | null;
   readonly initialThreads: readonly ThreadSummary[];
+  readonly isSignedIn: boolean;
   readonly models: readonly ModelOption[];
 };
 
@@ -371,6 +521,7 @@ export function ArenaPage({
   catalogError,
   initialThread,
   initialThreads,
+  isSignedIn,
 }: ArenaPageProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [rounds, setRounds] = useState<readonly ComparisonRound[]>(() =>
@@ -394,12 +545,23 @@ export function ArenaPage({
   const [threadTitle, setThreadTitle] = useState<string | null>(
     initialThread?.title ?? null,
   );
+  const [canInteract, setCanInteract] = useState(
+    initialThread?.canInteract ?? isSignedIn,
+  );
   const [isCreatingTurn, setIsCreatingTurn] = useState(false);
   const [isLoadingThread, setIsLoadingThread] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isAuthenticationRequired, setIsAuthenticationRequired] =
+    useState(false);
+  const [shareStatus, setShareStatus] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
   const isCreatingTurnRef = useRef(false);
   const runningResponseIdsRef = useRef(new Set<string>());
   const savingVoteTurnIdsRef = useRef(new Set<string>());
+  const historyNavigationRef = useRef<(nextThreadId: string | null) => void>(
+    () => undefined,
+  );
   const modelById = useMemo(
     () => new Map(models.map((model) => [model.id, model])),
     [models],
@@ -459,11 +621,29 @@ export function ArenaPage({
     );
   }
 
-  async function loadThread(nextThreadId: string) {
+  function startNewComparison(historyUpdate: HistoryUpdate = "push") {
+    if (isSubmitting) return;
+
+    setRounds([]);
+    setThreadId(null);
+    setThreadTitle(null);
+    setCanInteract(isSignedIn);
+    setPrompt("");
+    setSubmitError(null);
+    setIsAuthenticationRequired(false);
+    setIsSidebarOpen(false);
+    updateBrowserHistory(null, historyUpdate);
+  }
+
+  async function loadThread(
+    nextThreadId: string,
+    historyUpdate: HistoryUpdate = "push",
+  ) {
     if (nextThreadId === threadId || isSubmitting) return;
 
     setIsLoadingThread(true);
     setSubmitError(null);
+    setIsAuthenticationRequired(false);
     try {
       const response = await fetch(
         `/api/arena/threads?id=${encodeURIComponent(nextThreadId)}`,
@@ -488,13 +668,10 @@ export function ArenaPage({
       setRounds(nextRounds);
       setThreadId(storedThread.id);
       setThreadTitle(storedThread.title);
+      setCanInteract(storedThread.canInteract);
       setPrompt("");
       setIsSidebarOpen(false);
-      window.history.replaceState(
-        null,
-        "",
-        `/?thread=${encodeURIComponent(storedThread.id)}`,
-      );
+      updateBrowserHistory(storedThread.id, historyUpdate);
     } catch (error) {
       setSubmitError(
         error instanceof Error
@@ -506,6 +683,30 @@ export function ArenaPage({
     }
   }
 
+  historyNavigationRef.current = (nextThreadId) => {
+    if (isSubmitting) {
+      updateBrowserHistory(threadId, "replace");
+      return;
+    }
+
+    if (nextThreadId) {
+      void loadThread(nextThreadId, "none");
+    } else {
+      startNewComparison("none");
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      historyNavigationRef.current(
+        new URL(window.location.href).searchParams.get("thread"),
+      );
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   async function selectWinner(turnIdToUpdate: string, modelId: string) {
     const round = rounds.find(
       (candidate) => candidate.turnId === turnIdToUpdate,
@@ -514,6 +715,7 @@ export function ArenaPage({
       (candidate) => candidate.modelId === modelId,
     );
     if (
+      !canInteract ||
       !round ||
       !response ||
       savingVoteTurnIdsRef.current.has(turnIdToUpdate) ||
@@ -577,7 +779,7 @@ export function ArenaPage({
     responseId: string,
     modelId: string,
   ) {
-    if (runningResponseIdsRef.current.has(responseId)) return;
+    if (!canInteract || runningResponseIdsRef.current.has(responseId)) return;
     runningResponseIdsRef.current.add(responseId);
 
     updateRoundResponse(turnIdToUpdate, responseId, (response) => ({
@@ -705,6 +907,7 @@ export function ArenaPage({
     const nextPrompt = prompt.trim();
 
     if (
+      !canInteract ||
       !nextPrompt ||
       selectedModels.length === 0 ||
       isSubmitting ||
@@ -716,6 +919,7 @@ export function ArenaPage({
     isCreatingTurnRef.current = true;
     setIsCreatingTurn(true);
     setSubmitError(null);
+    setIsAuthenticationRequired(false);
     try {
       const result = await fetch("/api/arena/turns", {
         body: JSON.stringify({
@@ -726,6 +930,10 @@ export function ArenaPage({
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
+      if (result.status === 401) {
+        setIsAuthenticationRequired(true);
+        return;
+      }
       if (!result.ok) throw new Error(await responseError(result));
 
       const createdTurn = parseCreatedTurn(await result.json());
@@ -733,6 +941,7 @@ export function ArenaPage({
         throw new Error("The server returned an invalid comparison.");
       }
       const nextRound: ComparisonRound = {
+        createdAt: new Date().toISOString(),
         prompt: nextPrompt,
         responses: createdTurn.responses.map((response) => ({
           content: "",
@@ -751,23 +960,21 @@ export function ArenaPage({
 
       setThreadId(createdTurn.threadId);
       setThreadTitle(createdTurn.threadTitle);
-      setThreads((currentThreads) => [
-        {
-          id: createdTurn.threadId,
-          title: createdTurn.threadTitle,
-          updatedAt: createdTurn.threadUpdatedAt,
-        },
-        ...currentThreads.filter(
-          (candidate) => candidate.id !== createdTurn.threadId,
-        ),
-      ]);
+      setThreads((currentThreads) =>
+        [
+          {
+            id: createdTurn.threadId,
+            title: createdTurn.threadTitle,
+            updatedAt: createdTurn.threadUpdatedAt,
+          },
+          ...currentThreads.filter(
+            (candidate) => candidate.id !== createdTurn.threadId,
+          ),
+        ].slice(0, MAX_RECENT_THREADS),
+      );
       setRounds((currentRounds) => [...currentRounds, nextRound]);
       setPrompt("");
-      window.history.replaceState(
-        null,
-        "",
-        `/?thread=${encodeURIComponent(createdTurn.threadId)}`,
-      );
+      updateBrowserHistory(createdTurn.threadId, "replace");
       void Promise.allSettled(
         createdTurn.responses.map((response) =>
           requestModelResponse(
@@ -786,6 +993,22 @@ export function ArenaPage({
     } finally {
       isCreatingTurnRef.current = false;
       setIsCreatingTurn(false);
+    }
+  }
+
+  async function shareThread() {
+    if (!threadId) return;
+
+    try {
+      const url = new URL(
+        threadUrl(threadId),
+        window.location.origin,
+      ).toString();
+      await navigator.clipboard.writeText(url);
+      setShareStatus("copied");
+      window.setTimeout(() => setShareStatus("idle"), 2_000);
+    } catch {
+      setShareStatus("error");
     }
   }
 
@@ -844,7 +1067,13 @@ export function ArenaPage({
                 key={thread.id}
                 onClick={() => void loadThread(thread.id)}
               >
-                <span>{thread.title}</span>
+                <span className="thread-link-icon" aria-hidden="true">
+                  <FileText size={14} />
+                </span>
+                <span className="thread-link-copy">
+                  <span title={thread.title}>{thread.title}</span>
+                  <small>{relativeTime(thread.updatedAt)}</small>
+                </span>
                 {thread.id === threadId && (
                   <span className="thread-dot" aria-hidden="true" />
                 )}
@@ -857,23 +1086,22 @@ export function ArenaPage({
         </div>
 
         <div className="sidebar-footer">
-          <button
-            className="new-comparison"
-            type="button"
-            disabled={isSubmitting}
-            onClick={() => {
-              setRounds([]);
-              setThreadId(null);
-              setThreadTitle(null);
-              setPrompt("");
-              setSubmitError(null);
-              setIsSidebarOpen(false);
-              window.history.replaceState(null, "", "/");
-            }}
-          >
-            <Plus size={17} />
-            New comparison
-          </button>
+          {isSignedIn ? (
+            <button
+              className="new-comparison"
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => startNewComparison()}
+            >
+              <Plus size={17} />
+              New comparison
+            </button>
+          ) : (
+            <Link className="new-comparison" href="/sign-in">
+              <Plus size={17} />
+              New comparison
+            </Link>
+          )}
           <AccountMenu />
         </div>
       </aside>
@@ -891,9 +1119,13 @@ export function ArenaPage({
             </button>
             <div>
               <span className="breadcrumb">
-                {threadId ? "Arena / Current thread" : "Arena / New comparison"}
+                {threadId
+                  ? canInteract
+                    ? "Arena / Current thread"
+                    : "Arena / Public view"
+                  : "Arena / New chat"}
               </span>
-              <h1>{threadTitle ?? "Compare free AI models"}</h1>
+              <h1>{threadTitle ?? "New comparison"}</h1>
             </div>
           </div>
 
@@ -901,14 +1133,46 @@ export function ArenaPage({
             <button
               className="icon-button"
               type="button"
-              aria-label="Share thread"
+              aria-label={
+                shareStatus === "copied" ? "Link copied" : "Copy thread link"
+              }
+              disabled={!threadId}
+              title={
+                !threadId
+                  ? "Start a comparison before sharing"
+                  : shareStatus === "copied"
+                    ? "Link copied"
+                    : "Copy thread link"
+              }
+              onClick={() => void shareThread()}
             >
-              <Share2 size={18} />
+              {shareStatus === "copied" ? (
+                <Check size={18} />
+              ) : (
+                <Share2 size={18} />
+              )}
             </button>
+            <span className="sr-only" aria-live="polite">
+              {shareStatus === "copied"
+                ? "Thread link copied to clipboard."
+                : shareStatus === "error"
+                  ? "The thread link could not be copied."
+                  : ""}
+            </span>
           </div>
         </header>
 
-        <main className="conversation">
+        <main
+          className={`conversation${rounds.length === 0 ? " is-empty" : ""}`}
+        >
+          {rounds.length === 0 ? (
+            <NewComparisonEmptyState isSignedIn={isSignedIn} />
+          ) : null}
+
+          {threadId && !canInteract ? (
+            <PublicThreadNotice isSignedIn={isSignedIn} threadId={threadId} />
+          ) : null}
+
           {rounds.map((round, roundIndex) => {
             const completedResponses = round.responses.filter(
               (response) => response.status === "completed",
@@ -918,7 +1182,9 @@ export function ArenaPage({
               <section className="comparison-round" key={round.turnId}>
                 <div className="user-message-wrap">
                   <div className="user-message">{round.prompt}</div>
-                  <span className="message-meta">You · Just now</span>
+                  <span className="message-meta">
+                    Prompt · {relativeTime(round.createdAt)}
+                  </span>
                 </div>
 
                 <div className="comparison-heading">
@@ -944,7 +1210,8 @@ export function ArenaPage({
                     return (
                       <ModelCard
                         key={response.id}
-                        canVote={completedResponses >= 2}
+                        canInteract={canInteract}
+                        canVote={canInteract && completedResponses >= 2}
                         isVoteSaving={round.voteStatus === "saving"}
                         model={model}
                         response={response}
@@ -973,88 +1240,126 @@ export function ArenaPage({
           })}
         </main>
 
-        <div className="composer-dock">
-          <div className="composer">
-            <div className="model-chips" aria-label="Selected models">
-              {selectedModels.map((model) => (
-                <span className="model-chip" key={model.id}>
-                  <Bot size={13} aria-hidden="true" />
-                  <span>{model.name}</span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${model.name}`}
-                    disabled={selectedModelIds.length === 1}
-                    title={
-                      selectedModelIds.length === 1
-                        ? "At least one model is required"
-                        : undefined
-                    }
-                    onClick={() => removeModel(model.id)}
+        {canInteract ? (
+          <div className="composer-dock">
+            <div
+              className={`composer${isAuthenticationRequired ? " is-auth-required" : ""}`}
+            >
+              {isAuthenticationRequired ? (
+                <div className="authentication-required" role="status">
+                  <span
+                    className="authentication-required-icon"
+                    aria-hidden="true"
                   >
-                    <X size={13} />
-                  </button>
-                </span>
-              ))}
-              <ModelPicker
-                models={models}
-                catalogError={catalogError}
-                selectedModelIds={selectedModelIds}
-                onSelect={addModel}
-              />
-              {catalogError ? (
-                <span className="model-catalog-warning" role="status">
-                  Live catalog unavailable
-                </span>
+                    <LogIn size={18} />
+                  </span>
+                  <div className="authentication-required-copy">
+                    <strong>Your session ended</strong>
+                    <span>
+                      Sign in again to send this prompt. Your text is still
+                      here.
+                    </span>
+                  </div>
+                  <div className="authentication-required-actions">
+                    <button
+                      className="authentication-dismiss"
+                      type="button"
+                      onClick={() => setIsAuthenticationRequired(false)}
+                    >
+                      Dismiss
+                    </button>
+                    <SignInButton mode="modal">
+                      <button className="authentication-signin" type="button">
+                        Sign in
+                      </button>
+                    </SignInButton>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="composer-controls">
+                <div className="model-chips" aria-label="Selected models">
+                  {selectedModels.map((model) => (
+                    <span className="model-chip" key={model.id}>
+                      <Bot size={13} aria-hidden="true" />
+                      <span>{model.name}</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${model.name}`}
+                        disabled={selectedModelIds.length === 1}
+                        title={
+                          selectedModelIds.length === 1
+                            ? "At least one model is required"
+                            : undefined
+                        }
+                        onClick={() => removeModel(model.id)}
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  ))}
+                  <ModelPicker
+                    models={models}
+                    catalogError={catalogError}
+                    selectedModelIds={selectedModelIds}
+                    onSelect={addModel}
+                  />
+                  {catalogError ? (
+                    <span className="model-catalog-warning" role="status">
+                      Live catalog unavailable
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="prompt-row">
+                  <label className="sr-only" htmlFor="prompt-input">
+                    Send a follow-up prompt
+                  </label>
+                  <textarea
+                    id="prompt-input"
+                    value={prompt}
+                    rows={1}
+                    placeholder={
+                      threadId ? "Ask a follow-up…" : "Ask all selected models…"
+                    }
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        void submitPrompt();
+                      }
+                    }}
+                  />
+                  <div className="send-group">
+                    <span>Enter · Shift+Enter for newline</span>
+                    <button
+                      className="send-button"
+                      type="button"
+                      aria-label="Send prompt"
+                      disabled={
+                        !prompt.trim() ||
+                        selectedModels.length === 0 ||
+                        isSubmitting
+                      }
+                      onClick={() => void submitPrompt()}
+                    >
+                      <ArrowUp size={20} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {submitError ? (
+                <p className="arena-error" role="alert">
+                  {submitError}
+                </p>
               ) : null}
             </div>
-
-            <div className="prompt-row">
-              <label className="sr-only" htmlFor="prompt-input">
-                Send a follow-up prompt
-              </label>
-              <textarea
-                id="prompt-input"
-                value={prompt}
-                rows={1}
-                placeholder={
-                  threadId ? "Ask a follow-up…" : "Ask all selected models…"
-                }
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    void submitPrompt();
-                  }
-                }}
-              />
-              <div className="send-group">
-                <span>Enter · Shift+Enter for newline</span>
-                <button
-                  className="send-button"
-                  type="button"
-                  aria-label="Send prompt"
-                  disabled={
-                    !prompt.trim() ||
-                    selectedModels.length === 0 ||
-                    isSubmitting
-                  }
-                  onClick={() => void submitPrompt()}
-                >
-                  <ArrowUp size={20} />
-                </button>
-              </div>
-            </div>
-            {submitError ? (
-              <p className="arena-error" role="alert">
-                {submitError}
-              </p>
-            ) : null}
           </div>
-        </div>
+        ) : null}
       </section>
     </div>
   );
