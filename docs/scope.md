@@ -182,12 +182,16 @@ Anyone should be able to open a thread's link and see it, without an account, th
 
 Keep the existing `?thread=` permalink as the public sharing contract. Thread reads look up the opaque thread ID without requiring Clerk, but return only the comparison content and a `canInteract` capability computed for the current viewer; the owner's identity is never exposed. Every write path remains authenticated and owner-scoped at the database query, so a public link grants visibility but no mutation authority. The Arena renders the same saved rounds for everyone, hides voting, retry, and composer controls from non-owners, and offers owners their normal interactive workspace. Invalid IDs and absent records both terminate through Next.js's not-found boundary.
 
+Public reads use one Arcjet policy before either the server-rendered permalink or JSON endpoint can query PostgreSQL. Shield blocks common malicious web-request patterns; ordinary shared links are unchanged, while a denial appears in Arcjet as a Shield decision with its request details. Bot detection blocks scrapers and scripted clients but permits social, Slack, and link-preview bots, so normal readers and shared-link previews remain invisible to the rule; detected bot identity and category appear in the Arcjet dashboard when it fires. A per-IP sliding window allows 60 reads per minute, which normal browsing never approaches, while sustained refreshes and database-hammering scripts receive a denial; the dashboard records the rate-limit decision and client fingerprint.
+
 - [x] Decide the approach
 - [x] Build it
   - [x] Make thread reads public without exposing owner identity
   - [x] Add read-only Arena states and a working share-link action
   - [x] Render invalid and deleted thread links through a plain not-found page
   - [x] Verify anonymous reads, owner-only writes, quality gates, and production build
+  - [x] Protect both public read paths with Arcjet Shield, bot detection, and per-IP rate limiting
+  - [x] Verify Arcjet decisions, quality gates, and the production build
 
 ## Slice 4: Leaderboard
 
