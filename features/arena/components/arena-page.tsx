@@ -415,66 +415,47 @@ function ModelCard({
   );
 }
 
-function NewComparisonEmptyState({ isSignedIn }: { isSignedIn: boolean }) {
-  const guidance = [
-    {
-      description: "Add the context and constraints every model should use.",
-      icon: Lightbulb,
-      title: "Be specific",
-    },
-    {
-      description: "Ask for a format so the answers are easy to compare.",
-      icon: ListChecks,
-      title: "Shape the answer",
-    },
-    {
-      description: "Try explanations, trade-offs, or reasoning-heavy tasks.",
-      icon: Waypoints,
-      title: "Create contrast",
-    },
-  ] as const;
+const promptStarters = [
+  {
+    icon: Lightbulb,
+    title: "Make it make sense",
+    description: "Explore a complex idea",
+    prompt:
+      "Explain how large language models work to a curious beginner. Use an analogy, then explain where the analogy breaks down.",
+  },
+  {
+    icon: ListChecks,
+    title: "Find a better approach",
+    description: "Weigh the possibilities",
+    prompt:
+      "Compare the trade-offs of building a small app with a monolith versus microservices. Give a clear recommendation and explain when it would change.",
+  },
+  {
+    icon: Waypoints,
+    title: "Think a little deeper",
+    description: "Put reasoning to the test",
+    prompt:
+      "Design a practical plan for learning a new skill in 30 days with only 30 minutes a day. Explain your assumptions and how to measure progress.",
+  },
+] as const;
 
+function NewComparisonEmptyState() {
   return (
     <section className="new-thread-empty" aria-labelledby="new-thread-title">
       <div className="new-thread-heading">
-        <span className="new-thread-icon" aria-hidden="true">
-          <Sparkles size={21} />
-        </span>
-        <p className="eyebrow">New chat</p>
-        <h2 id="new-thread-title">Start a fresh comparison</h2>
+        <p className="welcome-label">
+          <Swords size={15} aria-hidden="true" /> A little curiosity. A better
+          answer.
+        </p>
+        <h2 id="new-thread-title">
+          Great minds.
+          <br />
+          <em>Different answers.</em>
+        </h2>
         <p>
-          One thoughtful prompt can reveal how differently each model reasons,
-          explains, and communicates.
+          One prompt. Multiple perspectives. Discover which AI works for you.
         </p>
       </div>
-
-      <div className="new-thread-guidance" aria-label="Prompt writing tips">
-        {guidance.map(({ description, icon: Icon, title }) => (
-          <div className="new-thread-tip" key={title}>
-            <span aria-hidden="true">
-              <Icon size={17} />
-            </span>
-            <div>
-              <strong>{title}</strong>
-              <p>{description}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {isSignedIn ? (
-        <p className="new-thread-footnote">
-          Choose up to three models below, then send your first prompt.
-        </p>
-      ) : (
-        <div className="new-thread-signin">
-          <div>
-            <strong>Ready to compare?</strong>
-            <span>Sign in to send prompts, vote, and keep your history.</span>
-          </div>
-          <Link href={signInUrl(null)}>Sign in to start</Link>
-        </div>
-      )}
     </section>
   );
 }
@@ -944,6 +925,11 @@ export function ArenaPage({
   async function submitPrompt() {
     const nextPrompt = prompt.trim();
 
+    if (!isSignedIn && !threadId && nextPrompt) {
+      setIsAuthenticationRequired(true);
+      return;
+    }
+
     if (
       !canInteract ||
       !nextPrompt ||
@@ -1144,7 +1130,10 @@ export function ArenaPage({
         </div>
       </aside>
 
-      <section className="arena-shell" id="arena">
+      <section
+        className={`arena-shell${rounds.length === 0 && !threadLoadError ? " is-welcome" : ""}`}
+        id="arena"
+      >
         <header className="topbar">
           <div className="thread-heading">
             <button
@@ -1168,7 +1157,7 @@ export function ArenaPage({
               <h1>
                 {threadLoadError
                   ? "Comparison unavailable"
-                  : (threadTitle ?? "New comparison")}
+                  : (threadTitle ?? "Compare models")}
               </h1>
             </div>
           </div>
@@ -1212,7 +1201,7 @@ export function ArenaPage({
           {threadLoadError ? (
             <UnavailableThreadState error={threadLoadError} />
           ) : rounds.length === 0 ? (
-            <NewComparisonEmptyState isSignedIn={isSignedIn} />
+            <NewComparisonEmptyState />
           ) : null}
 
           {threadId && !canInteract ? (
@@ -1286,7 +1275,7 @@ export function ArenaPage({
           })}
         </main>
 
-        {canInteract && !threadLoadError ? (
+        {(canInteract || (!threadId && !isSignedIn)) && !threadLoadError ? (
           <div className="composer-dock">
             <div
               className={`composer${isAuthenticationRequired ? " is-auth-required" : ""}`}
@@ -1300,10 +1289,14 @@ export function ArenaPage({
                     <LogIn size={18} />
                   </span>
                   <div className="authentication-required-copy">
-                    <strong>Your session ended</strong>
+                    <strong>
+                      {isSignedIn
+                        ? "Your session ended"
+                        : "Your next perspective awaits"}
+                    </strong>
                     <span>
-                      Sign in again to send this prompt. Your text is still
-                      here.
+                      Sign in to send your prompt and save your comparisons.
+                      Your text is still here.
                     </span>
                   </div>
                   <div className="authentication-required-actions">
@@ -1359,14 +1352,16 @@ export function ArenaPage({
 
                 <div className="prompt-row">
                   <label className="sr-only" htmlFor="prompt-input">
-                    Send a follow-up prompt
+                    Your prompt
                   </label>
                   <textarea
                     id="prompt-input"
                     value={prompt}
                     rows={1}
                     placeholder={
-                      threadId ? "Ask a follow-up…" : "Ask all selected models…"
+                      threadId
+                        ? "Ask a follow-up…"
+                        : "What are you curious about?"
                     }
                     onChange={(event) => setPrompt(event.target.value)}
                     onKeyDown={(event) => {
@@ -1404,6 +1399,50 @@ export function ArenaPage({
                 </p>
               ) : null}
             </div>
+            {rounds.length === 0 ? (
+              <div className="welcome-starters">
+                <p className="starter-label">A place to start</p>
+                <div className="starter-grid">
+                  {promptStarters.map(
+                    ({
+                      icon: Icon,
+                      title,
+                      description,
+                      prompt: starterPrompt,
+                    }) => (
+                      <button
+                        className="prompt-starter"
+                        type="button"
+                        key={title}
+                        onClick={() => {
+                          setPrompt(starterPrompt);
+                          document.getElementById("prompt-input")?.focus();
+                        }}
+                      >
+                        <Icon size={18} aria-hidden="true" />
+                        <span>
+                          <strong>{title}</strong>
+                          <small>{description}</small>
+                        </span>
+                      </button>
+                    ),
+                  )}
+                </div>
+                <p className="welcome-footnote">
+                  {isSignedIn ? (
+                    "Choose up to three models. Compare their answers. Vote for your favourite."
+                  ) : (
+                    <>
+                      <Link href={signInUrl(null)}>Sign in</Link> to compare
+                      answers, vote and save your history.
+                    </>
+                  )}
+                </p>
+              </div>
+            ) : null}
+            <p className="composer-disclaimer">
+              AI can be surprising. Always double check what matters.
+            </p>
           </div>
         ) : null}
       </section>

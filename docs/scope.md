@@ -82,6 +82,13 @@ Use a turn as the shared prompt boundary inside a thread, with one independently
 
 ### 4. Design & look
 
+Update on 2026-10-27: the user requested an Arena.ai inspired light refresh. The current visual source of truth is `design.md`, with implementation details in `docs/specs/0001-arena-light-refresh.md` and tokens in `app/globals.css`. This supersedes the original palette and typography notes below.
+
+- [x] Research the Arena.ai reference and record the light direction
+- [x] Update the shared palette, shell, editorial headings and welcome composer
+- [x] Connect prompt starters and verify input interaction
+- [ ] Verify authenticated comparison, catalogue and leaderboard in a signed in browser
+
 A warm ivory and cream background, not neutral gray or stark white. One accent color, rust, is used only for things you interact with—buttons, links, focus states, and the win-rate bar—never as decoration. The rust must stay clearly darker and more saturated than its surrounding surface so controls remain unmistakable. Blue, indigo, and purple are never the accent, under any circumstance. Green is reserved only for marking a winner, red only for errors, never reused for anything else. The application uses this light theme only; there is no dark mode or theme toggle.
 
 The visual direction is a **coffeehouse scorecard**: warm and editorial enough to feel human, structured and precise enough to make model comparisons trustworthy. It should feel like a focused evaluation workspace, not a generic SaaS dashboard or a neon AI demo. Use flat color, clear rules, compact data, and generous reading space; avoid gradients, glows, glass effects, oversized pills, and decorative illustrations.

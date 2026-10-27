@@ -33,11 +33,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           signUpFallbackRedirectUrl="/"
           appearance={{
             variables: {
-              colorPrimary: "#b44318",
-              colorBackground: "#fff9f4",
-              colorForeground: "#2c1a13",
-              colorMutedForeground: "#725c50",
-              colorNeutral: "#2c1a13",
+              colorPrimary: "#326342",
+              colorBackground: "#ffffff",
+              colorForeground: "#252523",
+              colorMutedForeground: "#62645c",
+              colorNeutral: "#252523",
               borderRadius: "0.75rem",
             },
           }}
